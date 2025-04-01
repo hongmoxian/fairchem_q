@@ -40,6 +40,7 @@ from .utils import (
     repeat_blocks,
 )
 
+from .ele_potential import ElectrostaticEnergy
 
 @registry.register_model("gemnet_oc")
 class GemNetOC(BaseModel):
@@ -296,7 +297,12 @@ class GemNetOC(BaseModel):
         self.atom_emb = AtomEmbedding(emb_size_atom, num_elements)
         self.edge_emb = EdgeEmbedding(
             emb_size_atom, num_radial, emb_size_edge, activation=activation
-        )
+        )    # (nEdges, emb_size)
+        self.lr_cutoff = self.cutoff + 6
+        self.get_q = ElectrostaticEnergy(
+                cuton=self.cutoff + 2,
+                cutoff=self.lr_cutoff,
+            )
 
         # Interaction Blocks
         int_blocks = []
@@ -358,6 +364,7 @@ class GemNetOC(BaseModel):
         ]
         self.out_mlp_E = torch.nn.Sequential(*out_mlp_E)
         self.out_energy = Dense(emb_size_atom, num_targets, bias=False, activation=None)
+        self.out_q = Dense(emb_size_atom, 1, bias=False, activation=None)
         if direct_forces:
             out_mlp_F = [
                 Dense(
@@ -379,6 +386,7 @@ class GemNetOC(BaseModel):
 
         out_initializer = get_initializer(output_init)
         self.out_energy.reset_parameters(out_initializer)
+        self.out_q.reset_parameters(out_initializer)
         if direct_forces:
             self.out_forces.reset_parameters(out_initializer)
 
@@ -1238,11 +1246,23 @@ class GemNetOC(BaseModel):
             num_atoms=num_atoms,
         )
 
+        q_graph = self.generate_graph(data=data, cutoff=self.lr_cutoff, max_neighbors=self.max_neighbors, use_pbc=self.use_pbc, otf_graph=self.otf_graph)
+
+        subgraph = {
+            "edge_index": q_graph[0],
+            "distance": q_graph[1],
+            "cell_offset": q_graph[3],
+            "num_neighbors": q_graph[5],
+        }
+        
+        edge_mask = subgraph["distance"] >= self.cutoff
+        subgraph["edge_index"] = subgraph["edge_index"][:, edge_mask]
+        subgraph["distance"] = subgraph["distance"][edge_mask]
         # Embedding block
-        h = self.atom_emb(atomic_numbers)
+        h = self.atom_emb(atomic_numbers)  # 83 * 128
         # (nAtoms, emb_size_atom)
-        m = self.edge_emb(h, basis_rad_raw, main_graph["edge_index"])
-        # (nEdges, emb_size_edge)
+        m = self.edge_emb(h, basis_rad_raw, main_graph["edge_index"])  # basis_rad_raw 2维
+        # (nEdges, emb_size_edge) 
 
         x_E, x_F = self.out_blocks[0](h, m, basis_output, idx_t)
         # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
@@ -1282,7 +1302,8 @@ class GemNetOC(BaseModel):
             E_t = self.out_energy(x_E.float())
             if self.direct_forces:
                 F_st = self.out_forces(x_F.float())
-
+            q = self.out_q(x_E.float()).squeeze(-1)
+        q = q - (torch.sum(q) - 0) / q.numel()
         nMolecules = torch.max(batch) + 1
         if self.extensive:
             E_t = scatter_det(
@@ -1294,7 +1315,14 @@ class GemNetOC(BaseModel):
             )  # (nMolecules, num_targets)
 
         E_t = E_t.squeeze(1)  # (num_molecules)
-        outputs = {"energy": E_t}
+        E_q = self.get_q(
+                num_atoms, q, subgraph["distance"], subgraph['edge_index'][0], subgraph['edge_index'][1], pos, data.cell, nMolecules, batch
+            )
+        E_q = scatter_det(
+                E_q, batch, dim=0, dim_size=nMolecules, reduce="add"
+            )
+        outputs = {"energy": E_t + E_q}
+        outputs["charge"] = q
         if self.regress_forces:
             if self.direct_forces:
                 if self.forces_coupled:  # enforce F_st = F_ts
