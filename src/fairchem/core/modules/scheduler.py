@@ -36,9 +36,23 @@ class LRScheduler:
             self.config["lr_lambda"] = scheduler_lambda_fn
 
         if self.scheduler_type != "Null":
-            self.scheduler = getattr(lr_scheduler, self.scheduler_type)
-            scheduler_args = self.filter_kwargs(config)
+            if self.scheduler_type == "ExponentialLR":
+                self.scheduler = lr_scheduler.ExponentialLR
+                scheduler_args = self.filter_kwargs(config)
+                if "final_lr" in self.config and "total_steps" in self.config:
+                    initial_lr = self.optimizer.param_groups[0]['lr']
+                    final_lr = self.config["final_lr"]
+                    total_steps = self.config["total_steps"]
+                    gamma = self.calculate_gamma(initial_lr, final_lr, total_steps)
+                    scheduler_args["gamma"] = gamma
+            else:
+                self.scheduler = getattr(lr_scheduler, self.scheduler_type)
+                scheduler_args = self.filter_kwargs(config)
+            
             self.scheduler = self.scheduler(optimizer, **scheduler_args)
+        
+        # Store final_lr if provided
+        self.final_lr = self.config.get("final_lr", None)
 
     def step(self, metrics=None, epoch=None) -> None:
         if self.scheduler_type == "Null":
@@ -48,6 +62,9 @@ class LRScheduler:
                 raise Exception("Validation set required for ReduceLROnPlateau.")
             self.scheduler.step(metrics)
         else:
+            current_lr = self.get_lr()
+            if self.final_lr is not None and current_lr <= self.final_lr:
+                return
             self.scheduler.step()
 
     def filter_kwargs(self, config):
@@ -65,3 +82,6 @@ class LRScheduler:
         for group in self.optimizer.param_groups:
             return group["lr"]
         return None
+
+    def calculate_gamma(self, initial_lr, final_lr, total_steps):
+        return (final_lr / initial_lr) ** (1 / total_steps)

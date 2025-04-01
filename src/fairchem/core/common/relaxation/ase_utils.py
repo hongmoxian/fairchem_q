@@ -246,3 +246,9 @@ class OCPCalculator(Calculator):
             _pred = predictions[key]
             _pred = _pred.item() if _pred.numel() == 1 else _pred.cpu().numpy()
             self.results[key] = _pred
+
+
+    def get_charge(self,) -> float:
+        if 'charge' not in self.results:
+            raise RuntimeError("Charges have not been calculated yet.")
+        return self.results['charge']
