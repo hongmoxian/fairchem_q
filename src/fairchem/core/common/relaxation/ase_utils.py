@@ -67,7 +67,7 @@ def batch_to_atoms(batch):
 
 
 class OCPCalculator(Calculator):
-    implemented_properties: ClassVar[list[str]] = ["energy", "forces"]
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces", 'charge', 'w']
 
     def __init__(
         self,
@@ -247,8 +247,9 @@ class OCPCalculator(Calculator):
             _pred = _pred.item() if _pred.numel() == 1 else _pred.cpu().numpy()
             self.results[key] = _pred
 
+    def get_charge(self, atoms,):
+        return self.get_property(name='charge', atoms=atoms, )
+    
+    def get_w(self, atoms,):
+        return self.get_property(name='w', atoms=atoms, )
 
-    def get_charge(self,) -> float:
-        if 'charge' not in self.results:
-            raise RuntimeError("Charges have not been calculated yet.")
-        return self.results['charge']

@@ -16,6 +16,8 @@ import numpy as np
 import torch
 import torch_geometric
 from tqdm import tqdm
+import pickle
+from ase.data import chemical_symbols
 
 from fairchem.core.common import distutils
 from fairchem.core.common.registry import registry
@@ -24,6 +26,7 @@ from fairchem.core.common.utils import cg_change_mat, check_traj_files, irreps_s
 from fairchem.core.modules.evaluator import Evaluator
 from fairchem.core.modules.scaling.util import ensure_fitted
 from fairchem.core.trainers.base_trainer import BaseTrainer
+from fairchem.core.models.gemnet_oc.qeq import QEqModule
 
 
 @registry.register_trainer("ocp")
@@ -171,8 +174,14 @@ class OCPTrainer(BaseTrainer):
                         "lr": self.scheduler.get_lr(),
                         "epoch": self.epoch,
                         "step": self.step,
+                        "w": out['w'].mean().item(),
+                        "q": out['pre_charge'][0].item(),
+                        "charge_energy": out['charge_energy'][0].item()
                     }
                 )
+
+                log_dict.update(self.loss_dict)
+
                 if (
                     self.step % self.config["cmd"]["print_every"] == 0
                     and distutils.is_master()
@@ -284,6 +293,9 @@ class OCPTrainer(BaseTrainer):
                 pred = pred.view(batch_size, -1)
 
             outputs[target_key] = pred
+        outputs['pre_charge'] = out.get('pre_charge', None)
+        outputs['charge_energy'] = out.get('charge_energy', None)
+        outputs['w'] = out.get('w', None)
 
         return outputs
 
@@ -291,7 +303,7 @@ class OCPTrainer(BaseTrainer):
         batch_size = batch.natoms.numel()
         fixed = batch.fixed
         mask = fixed == 0
-
+        self.loss_dict = {}
         loss = []
         for loss_fn in self.loss_fns:
             target_name, loss_info = loss_fn
@@ -311,6 +323,11 @@ class OCPTrainer(BaseTrainer):
                 natoms = natoms[mask]
 
             num_atoms_in_batch = natoms.numel()
+            # if target_name == 'energy':
+
+            #     data = pickle.load(open('avge0.pkl', 'rb'))
+            #     target = target - np.sum([data[i] for i in batch.atomic_numbers.to(torch.int16)])
+
             if self.normalizers.get(target_name, False):
                 target = self.normalizers[target_name].norm(target)
 
@@ -321,15 +338,92 @@ class OCPTrainer(BaseTrainer):
                 target = target.view(batch_size, -1)
 
             mult = loss_info["coefficient"]
-            loss.append(
-                mult
+            self.loss_dict[target_name] = mult \
                 * loss_info["fn"](
                     pred,
                     target,
                     natoms=natoms,
                     batch_size=batch_size,
                 )
+            
+            
+            loss.append(
+                self.loss_dict[target_name]
             )
+        calc_qeq = True
+        en_dict = {
+            'H': 2.20, 'Li': 0.98, 'Be': 1.57, 'B': 2.04, 'C': 2.55, 'N': 3.04,
+            'O': 3.44, 'F': 3.98, 'Na': 0.93, 'Mg': 1.31, 'Al': 1.61, 'Si': 1.90,
+            'P': 2.19, 'S': 2.58, 'Cl': 3.16, 'K': 0.82, 'Ca': 1.00, 'Sc': 1.36,
+            'Ti': 1.54, 'V': 1.63, 'Cr': 1.66, 'Mn': 1.55, 'Fe': 1.83, 'Co': 1.88,
+            'Ni': 1.91, 'Cu': 1.90, 'Zn': 1.65, 'Ga': 1.81, 'Ge': 2.01, 'As': 2.18,
+            'Se': 2.48, 'Br': 2.96, 'Rb': 0.82, 'Sr': 0.95, 'Y': 1.22, 'Zr': 1.33,
+            'Nb': 1.59, 'Mo': 2.16, 'Tc': 1.91, 'Ru': 2.20, 'Rh': 2.28, 'Pd': 2.20,
+            'Ag': 1.93, 'Cd': 1.69, 'In': 1.78, 'Sn': 1.96, 'Sb': 2.05, 'Te': 2.12,
+            'I': 2.66, 'Cs': 0.79, 'Ba': 0.89, 'La': 1.10, 'Ce': 1.12, 'Pr': 1.13,
+            'Nd': 1.14, 'Pm': 1.13, 'Sm': 1.17, 'Eu': 1.20, 'Gd': 1.20, 'Tb': 1.22,
+            'Dy': 1.23, 'Ho': 1.24, 'Er': 1.24, 'Tm': 1.25, 'Yb': 1.26, 'Lu': 1.27,
+            'Hf': 1.30, 'Ta': 1.50, 'W': 2.36, 'Re': 1.93, 'Os': 2.18, 'Ir': 2.20,
+            'Pt': 2.28, 'Au': 2.54, 'Hg': 2.00, 'Tl': 1.62, 'Pb': 2.33, 'Bi': 2.02
+        }   
+            # if target_name == 'charge':
+        
+        def get_symbol_by_number(atomic_number):
+            return chemical_symbols[atomic_number]
+        
+        def electronegativity_rank_loss(output, atoms, en_dict):
+            from collections import defaultdict
+
+            charges = output.squeeze()  # 假设输出形状为 [N]
+            atom_groups = defaultdict(list)
+
+            # 构建原子索引映射：按元素分组
+            for i, atom in enumerate(atoms):
+                symbol = get_symbol_by_number(atom)
+                atom_groups[symbol].append(i)
+
+            avg_charges = []
+            en_values = []
+
+            # 对每个元素计算平均电荷，并获取电负性
+            for symbol, indices in atom_groups.items():
+                group_charges = charges[indices]  # 获取该元素的所有电荷值
+                avg_charge = torch.mean(group_charges)  # 平均电荷（保留梯度）
+                avg_charges.append(avg_charge)
+                en_values.append(en_dict[symbol])
+
+            # 转换为张量
+            avg_charges_tensor = torch.stack(avg_charges)
+            en_values_tensor = torch.tensor(en_values, device=charges.device)
+
+            # 排序并获取秩（rank）
+            _, charge_order = torch.sort(avg_charges_tensor, stable=True)
+            _, en_order = torch.sort(en_values_tensor, stable=True)
+
+            # 创建排序 -> 秩 的映射
+            charge_ranks = torch.argsort(charge_order, stable=True).float()
+            en_ranks = torch.argsort(en_order, stable=True).float()
+
+            # 计算 Spearman 相关系数
+            corr = torch.corrcoef(torch.stack([en_ranks, charge_ranks]))[0, 1]
+
+            # 损失定义为 1 - 相关系数
+            loss = 1.0 - corr
+
+            return loss
+        
+        if calc_qeq:
+            eqemodel = self.model.qeq_module
+            grad_outputs = torch.ones_like(out['charge_energy'])
+            out['qeq_force'] = -1 * eqemodel.get_qeq_force(out['charge_energy'], out['pre_charge'], grad_outputs=grad_outputs)
+            loss_qeq = torch.mean(torch.square(out['qeq_force']))
+            loss.append(300 * loss_qeq)
+
+            # self.loss_dict['en_loss'] = 1000 * electronegativity_rank_loss(out['pre_charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
+            # loss.append(self.loss_dict['en_loss'])
+
+            self.loss_dict['qeq_loss'] = loss_qeq * 300
+            # self.loss_dict['en_loss'] = electronegativity_rank_loss(out['charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
 
         # Sanity check to make sure the compute graph is correct.
         for lc in loss:
@@ -360,6 +454,12 @@ class OCPTrainer(BaseTrainer):
 
         targets = {}
         for target_name in self.output_targets:
+            if target_name == "charge":
+                continue
+
+            if target_name == "w":
+                continue
+                
             target = batch[target_name]
             num_atoms_in_batch = batch.natoms.sum()
 
@@ -385,6 +485,8 @@ class OCPTrainer(BaseTrainer):
 
         targets["natoms"] = natoms
         out["natoms"] = natoms
+
+        
 
         return evaluator.eval(out, targets, prev_metrics=metrics)
 
@@ -433,10 +535,14 @@ class OCPTrainer(BaseTrainer):
             with torch.cuda.amp.autocast(enabled=self.scaler is not None):
                 out = self._forward(batch)
 
-            for target_key in self.config["outputs"]:
+            for target_key in self.config['outputs']:
                 pred = out[target_key]
                 if self.normalizers.get(target_key, False):
                     pred = self.normalizers[target_key].denorm(pred)
+                
+                # if target_key == "energy":
+                #     data = pickle.load(open('avge0.pkl', 'rb'))
+                #     pred = pred + np.sum([data[i] for i in batch.atomic_numbers.to(torch.int16)])
 
                 if per_image:
                     ### Save outputs in desired precision, default float16
