@@ -248,8 +248,14 @@ class OCPCalculator(Calculator):
             self.results[key] = _pred
 
     def get_charge(self, atoms,):
-        return self.get_property(name='charge', atoms=atoms, )
+        self.calculate(atoms, properties=['charge'], system_changes=['positions', 'numbers', 'cell'])
+        return self.results['charge']
     
     def get_w(self, atoms,):
-        return self.get_property(name='w', atoms=atoms, )
+        self.calculate(atoms, properties=['w'], system_changes=['positions', 'numbers', 'cell'])
+        return self.results['w']
+
+    def get_energy(self, atoms,):
+        self.calculate(atoms, properties=['energy'], system_changes=['positions', 'numbers', 'cell'])
+        return self.results['energy']
 
