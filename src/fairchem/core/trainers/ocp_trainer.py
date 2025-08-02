@@ -175,8 +175,8 @@ class OCPTrainer(BaseTrainer):
                         "epoch": self.epoch,
                         "step": self.step,
                         "w": out['w'].mean().item(),
-                        "q": out['pre_charge'][0].item(),
-                        "charge_energy": out['charge_energy'][0].item()
+                        # "q": out['pre_charge'][0].item(),
+                        # "charge_energy": out['charge_energy'][0].item()
                     }
                 )
 
@@ -293,10 +293,10 @@ class OCPTrainer(BaseTrainer):
                 pred = pred.view(batch_size, -1)
 
             outputs[target_key] = pred
-        outputs['pre_charge'] = out.get('pre_charge', None)
-        outputs['charge_energy'] = out.get('charge_energy', None)
+        # outputs['pre_charge'] = out.get('pre_charge', None)
+        # outputs['charge_energy'] = out.get('charge_energy', None)
         outputs['w'] = out.get('w', None)
-        outputs['qeq_force'] = out.get('qeq_force', None)
+        # outputs['qeq_force'] = out.get('qeq_force', None)
 
         return outputs
 
@@ -413,17 +413,17 @@ class OCPTrainer(BaseTrainer):
 
             return loss
         
-        if calc_qeq:
-            # eqemodel = self.model.qeq_module
-            # grad_outputs = torch.ones_like(out['charge_energy'])
-            # out['qeq_force'] = -1 * eqemodel.get_qeq_force(out['charge_energy'], out['pre_charge'], grad_outputs=grad_outputs)
+        # if calc_qeq:
+        #     # eqemodel = self.model.qeq_module
+        #     # grad_outputs = torch.ones_like(out['charge_energy'])
+        #     # out['qeq_force'] = -1 * eqemodel.get_qeq_force(out['charge_energy'], out['pre_charge'], grad_outputs=grad_outputs)
             
-            loss.append(300 * out['qeq_force'])
+        #     loss.append(300 * out['qeq_force'])
 
-            self.loss_dict['en_loss'] = 1000 * electronegativity_rank_loss(out['pre_charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
-            loss.append(self.loss_dict['en_loss'])
+        #     self.loss_dict['en_loss'] = 1000 * electronegativity_rank_loss(out['pre_charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
+        #     loss.append(self.loss_dict['en_loss'])
 
-            self.loss_dict['qeq_loss'] = out['qeq_force'] * 300
+        #     self.loss_dict['qeq_loss'] = out['qeq_force'] * 300
             # self.loss_dict['en_loss'] = electronegativity_rank_loss(out['charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
             # loss_w = torch.mean(torch.abs(out['w'] - 4.44 - batch.mu ))
             # loss.append(loss_w * 100)
