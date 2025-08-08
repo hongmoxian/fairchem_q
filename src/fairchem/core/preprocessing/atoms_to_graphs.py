@@ -172,7 +172,6 @@ class AtomsToGraphs:
         tags = torch.Tensor(atoms.get_tags())
         charge = torch.Tensor(atoms.info.get("charge", 0))
 
-        print('charge', charge)
 
         # put the minimum data in torch geometric data object
         data = Data(
@@ -227,7 +226,6 @@ class AtomsToGraphs:
                     if isinstance(atoms.info[data_key], (int, float))
                     else torch.Tensor(atoms.info[data_key])
                 )
-
         return data
 
     def convert_all(

@@ -67,7 +67,7 @@ def batch_to_atoms(batch):
 
 
 class OCPCalculator(Calculator):
-    implemented_properties: ClassVar[list[str]] = ["energy", "forces", 'charge', 'w']
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces", 'w']
 
     def __init__(
         self,
@@ -247,15 +247,9 @@ class OCPCalculator(Calculator):
             _pred = _pred.item() if _pred.numel() == 1 else _pred.cpu().numpy()
             self.results[key] = _pred
 
-    def get_charge(self, atoms,):
-        self.calculate(atoms, properties=['charge'], system_changes=['positions', 'numbers', 'cell'])
-        return self.results['charge']
     
-    def get_w(self, atoms,):
-        self.calculate(atoms, properties=['w'], system_changes=['positions', 'numbers', 'cell'])
-        return self.results['w']
+    # def get_w(self, atoms,):
+    #     self.calculate(atoms, properties=['w'], system_changes=['positions', 'numbers', 'cell'])
+    #     return self.results['w']
 
-    def get_energy(self, atoms,):
-        self.calculate(atoms, properties=['energy'], system_changes=['positions', 'numbers', 'cell'])
-        return self.results['energy']
 
