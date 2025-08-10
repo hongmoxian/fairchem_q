@@ -1287,12 +1287,13 @@ class GemNetOC(BaseModel):
         charge = data.charge.unsqueeze(1)  # batch * 1
         batch_idx = data.batch
         h = self.q_attn(h, charge, batch_idx)  # (nAtoms, emb_size_atom+ 1)
+        # print(torch.autograd.grad(h, data.charge, grad_outputs=torch.ones_like(h), create_graph=True))
         # charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         # (nAtoms, emb_size_atom)
         # h = torch.cat([h, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
         m = self.edge_emb(h, basis_rad_raw, main_graph["edge_index"])  # basis_rad_raw 2维
         # (nEdges, emb_size_edge) nEdges 512
-
+        # print(torch.autograd.grad(m, data.charge, grad_outputs=torch.ones_like(m)))
         x_E, x_F = self.out_blocks[0](h, m, basis_output, idx_t)
         # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
         xs_E, xs_F = [x_E], [x_F]
