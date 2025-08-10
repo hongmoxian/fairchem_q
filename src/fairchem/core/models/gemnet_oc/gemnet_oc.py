@@ -43,6 +43,7 @@ from .utils import (
 # from .ele_potential import ElectrostaticEnergy
 from .qeq import QEqModule
 import torch.nn as nn
+from .q_conditional import QConditionedAttention
 
 @registry.register_model("gemnet_oc")
 class GemNetOC(BaseModel):
@@ -411,6 +412,7 @@ class GemNetOC(BaseModel):
         # self.qeq_module = QEqModule()
 
         # self.k = nn.Parameter(torch.tensor(0.1), requires_grad=True)
+        self.q_attn = QConditionedAttention(emb_size_atom, num_heads=4)
 
     def set_cutoffs(self, cutoff, cutoff_qint, cutoff_aeaint, cutoff_aint):
         self.cutoff = cutoff
@@ -1282,6 +1284,9 @@ class GemNetOC(BaseModel):
         # subgraph["distance"] = subgraph["distance"][edge_mask]
         # Embedding block
         h = self.atom_emb(atomic_numbers)  # atom * 256
+        charge = data.charge.unsqueeze(1)
+        batch_idx = data.batch
+        h = self.q_attn(h, charge, batch_idx)  # (nAtoms, emb_size_atom)
         charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         # (nAtoms, emb_size_atom)
         h = torch.cat([h, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
@@ -1312,6 +1317,7 @@ class GemNetOC(BaseModel):
                 trip_idx_e2a=trip_idx_e2a,
                 quad_idx=quad_idx,
             )  # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
+            h = self.q_attn(h, charge, batch_idx)
 
             x_E, x_F = self.out_blocks[i + 1](h, m, basis_output, idx_t)
             # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
