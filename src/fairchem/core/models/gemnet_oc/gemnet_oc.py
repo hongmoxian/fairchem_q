@@ -1376,13 +1376,13 @@ class GemNetOC(BaseModel):
         # cont_feature = torch.cat([E_t, data.charge.unsqueeze(-1)], dim=-1)  # (nMolecules, emb_size_atom+1)
         # E_t = self.out_energy(cont_feature.float()).squeeze(-1)
          # (nMolecules,)
-        grad_outputs = [ torch.ones_like(charge_energy) ]
-        main_graph['vector'].requires_grad_(True)
-        qeq_force = self.qeq_module.get_qeq_force(charge_energy=charge_energy, inputs=main_graph, row=main_graph['edge_index'][0], col=main_graph['edge_index'][1], natoms=num_atoms, grad_outputs=grad_outputs)
-        loss_qeq = torch.mean(torch.square(qeq_force))
+        # grad_outputs = [ torch.ones_like(charge_energy) ]
+        # main_graph['vector'].requires_grad_(True)
+        # qeq_force = self.qeq_module.get_qeq_force(charge_energy=charge_energy, inputs=main_graph, row=main_graph['edge_index'][0], col=main_graph['edge_index'][1], natoms=num_atoms, grad_outputs=grad_outputs)
+        # loss_qeq = torch.mean(torch.square(qeq_force))
         
         outputs = {"charge_energy": charge_energy}
-        outputs["qeq_force"] = loss_qeq
+        # outputs["qeq_force"] = loss_qeq
         outputs['pred_charge'] = pre_charge
         # E_q = self.get_q(
         #         num_atoms, q, subgraph["distance"], subgraph['edge_index'][0], subgraph['edge_index'][1], pos, data.cell, nMolecules, batch
