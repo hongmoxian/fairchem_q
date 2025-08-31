@@ -43,6 +43,9 @@ from .utils import (
 # from .ele_potential import ElectrostaticEnergy
 from .qeq import QEqModule
 import torch.nn as nn
+import jax
+import jax.numpy as jnp
+from jaxopt import LBFGS
 
 @registry.register_model("gemnet_oc")
 class GemNetOC(BaseModel):
@@ -369,7 +372,7 @@ class GemNetOC(BaseModel):
         self.out_mlp_E = torch.nn.Sequential(*out_mlp_E)
         # self.out_energy = Dense(emb_size_atom + 1, num_targets, bias=True, activation=None)
         self.out_energy = nn.Sequential(
-        nn.Linear(emb_size_atom + 1, 128),
+        nn.Linear(emb_size_atom, 128),
         nn.SiLU(),
         nn.Linear(128, 1)
     )
@@ -1320,18 +1323,19 @@ class GemNetOC(BaseModel):
         # 1. 原子特征
         x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1)) # (nAtoms, emb_size_atom)
         # 2. 将charge扩展到每个原子
-        charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
+        # charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         # 3. 拼接charge到原子特征
-        x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
+        # x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
         # 4. 预测原子能量
-        atom_energy = self.out_energy(x_E_with_charge)  # (nAtoms, 1)
+        atom_energy = self.out_energy(x_E)  # (nAtoms, 1)
         # 5. 聚合为分子能量
         nMolecules = torch.max(data.batch) + 1
         mol_energy = scatter_det(atom_energy, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
         mol_energy = mol_energy.squeeze(-1)  # (nMolecules,)
         
         # 使用模型的x_E来预测电荷
-        pre_charge = self.qeq_module.predict_charge(node_feat=x_E_with_charge, inputs=data)
+        chi, eta = self.qeq_module.get_electronegativity(x_E)
+        pre_charge = self.qeq_module.solve_qeq_linear_system(chi, eta, pos, batch, data.charge, q_graph)
         
         # 计算静电能和力
         coul_energy, coul_force = self.qeq_module.get_coulomb_energy(
@@ -1341,9 +1345,12 @@ class GemNetOC(BaseModel):
             pred_charge=pre_charge, 
             inputs=data
         )
+
+
         nMolecules = torch.max(batch) + 1
         electronegativity_energy = self.qeq_module.get_electronegativity_energy(
-            node_feat=x_E, 
+            pred_electronegativity=chi, 
+            pred_electronegativity_hardness=eta, 
             pred_charge=pre_charge, 
             inputs=data, 
             nmols=nMolecules
