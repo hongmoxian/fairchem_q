@@ -594,7 +594,7 @@ class QEqModule(nn.Module):
                 # torch.linalg.solve 返回 x 使得 Ax = b
                 x_aug_solution, _ = torch.linalg.solve(A_aug, b_aug.unsqueeze(1)) # solve 需要列向量
                 mol_q_eq = x_aug_solution[:N, 0] # 取解向量的前 N 个元素作为电荷 [N]
-                # lambda_sol = x_aug_solution[N, 0] # (通常不需要拉格朗日乘子)
+                lambda_sol = x_aug_solution[N, 0] # (通常不需要拉格朗日乘子)
 
             except torch.linalg.LinAlgError as e:
                 # 如果矩阵是奇异的 (不可逆)，则使用伪逆 (SVD) 来求解 (更鲁棒)
