@@ -6,6 +6,7 @@ LICENSE file in the root directory of this source tree.
 
 from __future__ import annotations
 
+from ast import main
 import logging
 
 import numpy as np
@@ -372,7 +373,7 @@ class GemNetOC(BaseModel):
         self.out_mlp_E = torch.nn.Sequential(*out_mlp_E)
         # self.out_energy = Dense(emb_size_atom + 1, num_targets, bias=True, activation=None)
         self.out_energy = nn.Sequential(
-        nn.Linear(emb_size_atom, 128),
+        nn.Linear(emb_size_atom + 1, 128),
         nn.SiLU(),
         nn.Linear(128, 1)
     )
@@ -1247,7 +1248,7 @@ class GemNetOC(BaseModel):
             quad_idx,
         ) = self.get_graphs_and_indices(data)
 
-        q_graph = self.generate_graph(data=data, cutoff=self.cutoff_q, max_neighbors=self.max_neighbors, use_pbc=self.use_pbc, otf_graph=self.otf_graph)
+        # q_graph = self.generate_graph(data=data, cutoff=self.cutoff_q, max_neighbors=self.max_neighbors, use_pbc=self.use_pbc, otf_graph=self.otf_graph)
         _, idx_t = main_graph["edge_index"]
 
         (
@@ -1271,7 +1272,7 @@ class GemNetOC(BaseModel):
             num_atoms=num_atoms,
         )
 
-        q_graph = self.generate_graph(data=data, cutoff=self.lr_cutoff, max_neighbors=self.max_neighbors, use_pbc=self.use_pbc, otf_graph=self.otf_graph)
+        # q_graph = self.generate_graph(data=data, cutoff=self.lr_cutoff, max_neighbors=self.max_neighbors, use_pbc=self.use_pbc, otf_graph=self.otf_graph)
 
         # subgraph = {
         #     "edge_index": q_graph[0],
@@ -1323,25 +1324,25 @@ class GemNetOC(BaseModel):
         # 1. 原子特征
         x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1)) # (nAtoms, emb_size_atom)
         # 2. 将charge扩展到每个原子
-        # charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
+        charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         # 3. 拼接charge到原子特征
-        # x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
+        x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
         # 4. 预测原子能量
-        atom_energy = self.out_energy(x_E)  # (nAtoms, 1)
+        atom_energy = self.out_energy(x_E_with_charge)  # (nAtoms, 1)
         # 5. 聚合为分子能量
         nMolecules = torch.max(data.batch) + 1
         mol_energy = scatter_det(atom_energy, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
         mol_energy = mol_energy.squeeze(-1)  # (nMolecules,)
         
         # 使用模型的x_E来预测电荷
-        chi, eta = self.qeq_module.get_electronegativity(x_E)
-        pre_charge = self.qeq_module.solve_qeq_linear_system(chi, eta, pos, batch, data.charge, q_graph)
+        chi, eta = self.qeq_module.get_electronegativity(data)
+        pre_charge = self.qeq_module.solve_qeq_linear_system(chi, eta, pos, batch, data.charge, main_graph["edge_index"])
         
         # 计算静电能和力
         coul_energy, coul_force = self.qeq_module.get_coulomb_energy(
-            row=q_graph[0][0], 
-            col=q_graph[0][1], 
-            dij=q_graph[2], 
+            row=main_graph["edge_index"][0], 
+            col=main_graph["edge_index"][1], 
+            dij=main_graph["vector"], 
             pred_charge=pre_charge, 
             inputs=data
         )
@@ -1390,16 +1391,16 @@ class GemNetOC(BaseModel):
         
         outputs = {"charge_energy": charge_energy}
         # outputs["qeq_force"] = loss_qeq
-        outputs['pred_charge'] = pre_charge
+        outputs['charge'] = pre_charge
         # E_q = self.get_q(
         #         num_atoms, q, subgraph["distance"], subgraph['edge_index'][0], subgraph['edge_index'][1], pos, data.cell, nMolecules, batch
         #     )
         # E_q = scatter_det(
         #         E_q, batch, dim=0, dim_size=nMolecules, reduce="add"
         #     )
-        outputs = {"energy": mol_energy + charge_energy}
-        outputs['charge'] = pre_charge
-        outputs['pre_charge'] = pre_charge
+        outputs['energy'] = mol_energy + charge_energy
+        # outputs['charge'] = pre_charge
+        # outputs['pre_charge'] = pre_charge
 
         # w = self.out_w(x_E_with_charge)
         # outputs['w'] = w

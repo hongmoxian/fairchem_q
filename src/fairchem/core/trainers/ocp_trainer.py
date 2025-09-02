@@ -175,7 +175,7 @@ class OCPTrainer(BaseTrainer):
                         "epoch": self.epoch,
                         "step": self.step,
                         "w": out['w'].mean().item(),
-                        "q": out['pre_charge'][0].item(),
+                        "q": out['charge'][0].item(),
                         "charge_energy": out['charge_energy'][0].item()
                     }
                 )
@@ -293,10 +293,10 @@ class OCPTrainer(BaseTrainer):
                 pred = pred.view(batch_size, -1)
 
             outputs[target_key] = pred
-        outputs['pre_charge'] = out.get('pre_charge', None)
+        outputs['charge'] = out.get('charge', None)
         outputs['charge_energy'] = out.get('charge_energy', None)
         outputs['w'] = out.get('w', None)
-        outputs['qeq_force'] = out.get('qeq_force', None)
+        # outputs['qeq_force'] = out.get('qeq_force', None)
 
         return outputs
 

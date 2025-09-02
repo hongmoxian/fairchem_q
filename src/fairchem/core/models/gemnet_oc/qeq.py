@@ -5,9 +5,9 @@ from torch_runstats.scatter import scatter
 # from typing import Optional
 import numpy as np
 from ase.data import chemical_symbols
-import jax
-import jax.numpy as jnp
-from jaxopt import LBFGS
+# import jax
+# import jax.numpy as jnp
+# from jaxopt import LBFGS
 
 
 # 定义一些常量
@@ -15,6 +15,25 @@ ELECTRON_CHARGE = 1.602176634e-19  # 电子电荷 (C)
 COULOMB_CONSTANT = 8.9875517923e9  # 库仑常数 (N m^2 C^-2)
 ANGSTROM_TO_METER = 1e-10  # 埃到米的转换因子
 EV_TO_JOULE = 1.602176634e-19  # 电子伏特到焦耳的转换因子
+
+
+name2eta = {
+    "K":3.84,
+    "C":10,
+    "H":12.84,
+    "O":12.16,
+    "Ni":6.48,
+    "N":14.6,
+}
+
+name2chi = {
+    "K":2.42,
+    "C":6.26,
+    "H":7.18,
+    "O":7.54,
+    "Ni":4.4,
+    "N":7.23,
+}
 
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dims, output_dim):
@@ -381,15 +400,18 @@ class QEqModule(nn.Module):
         # 电负性能量已经是 eV 量级，不需要额外转换
         return electronegativity_energy
 
-    def get_electronegativity(self, node_feat):
+    def get_electronegativity(self, inputs):
         """
         计算电负性
         :param node_feat: 节点特征
         :param inputs: 输入数据，包含mol_ids
         :return: 电负性
         """
-        pred_electronegativity = self.electronegativity_mlp(node_feat).squeeze(-1)
-        pred_electronegativity_hardness = self.hardness_mlp(node_feat).squeeze(-1)
+        # pred_electronegativity = self.electronegativity_mlp(node_feat).squeeze(-1)
+        # pred_electronegativity_hardness = self.hardness_mlp(node_feat).squeeze(-1)
+        # name2chi.get(data.atomic_number)
+        pred_electronegativity = torch.tensor([name2chi[chemical_symbols[int(i)]] for i in inputs['atomic_numbers']], device=inputs['atomic_numbers'].device)
+        pred_electronegativity_hardness = torch.tensor([name2eta[chemical_symbols[int(i)]] for i in inputs['atomic_numbers']], device=inputs['atomic_numbers'].device)
         return pred_electronegativity, pred_electronegativity_hardness
 
     def get_charge_energy(self, node_feat, row, col, dij, inputs, g_ewald=None):
@@ -592,7 +614,7 @@ class QEqModule(nn.Module):
             try:
                 # 使用 LU 分解求解稠密线性系统 (推荐)
                 # torch.linalg.solve 返回 x 使得 Ax = b
-                x_aug_solution, _ = torch.linalg.solve(A_aug, b_aug.unsqueeze(1)) # solve 需要列向量
+                x_aug_solution = torch.linalg.solve(A_aug, b_aug.unsqueeze(1)) # solve 需要列向量
                 mol_q_eq = x_aug_solution[:N, 0] # 取解向量的前 N 个元素作为电荷 [N]
                 lambda_sol = x_aug_solution[N, 0] # (通常不需要拉格朗日乘子)
 
