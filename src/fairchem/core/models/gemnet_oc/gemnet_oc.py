@@ -373,7 +373,7 @@ class GemNetOC(BaseModel):
         self.out_mlp_E = torch.nn.Sequential(*out_mlp_E)
         # self.out_energy = Dense(emb_size_atom + 1, num_targets, bias=True, activation=None)
         self.out_energy = nn.Sequential(
-        nn.Linear(emb_size_atom + 1, 128),
+        nn.Linear(emb_size_atom, 128),
         nn.SiLU(),
         nn.Linear(128, 1)
     )
@@ -1285,8 +1285,11 @@ class GemNetOC(BaseModel):
         # subgraph["edge_index"] = subgraph["edge_index"][:, edge_mask]
         # subgraph["distance"] = subgraph["distance"][edge_mask]
         # Embedding block
+        data.charge.requires_grad_(True)
+        charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         h = self.atom_emb(atomic_numbers)  # 83 * 128
         # (nAtoms, emb_size_atom)
+        h = torch.cat([h, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
         m = self.edge_emb(h, basis_rad_raw, main_graph["edge_index"])  # basis_rad_raw 2维
         # (nEdges, emb_size_edge) 
 
@@ -1320,15 +1323,15 @@ class GemNetOC(BaseModel):
             xs_E.append(x_E)
             xs_F.append(x_F)
 
-        data.charge.requires_grad_(True)
+        
         # 1. 原子特征
         x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1)) # (nAtoms, emb_size_atom)
         # 2. 将charge扩展到每个原子
-        charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
+        
         # 3. 拼接charge到原子特征
-        x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
+        # x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
         # 4. 预测原子能量
-        atom_energy = self.out_energy(x_E_with_charge)  # (nAtoms, 1)
+        atom_energy = self.out_energy(x_E)  # (nAtoms, 1)
         # 5. 聚合为分子能量
         nMolecules = torch.max(data.batch) + 1
         mol_energy = scatter_det(atom_energy, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
