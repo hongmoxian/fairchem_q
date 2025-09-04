@@ -414,7 +414,7 @@ class GemNetOC(BaseModel):
         # 将QEqModule作为模型的一个组件
         self.qeq_module = QEqModule()
 
-        self.k = nn.Parameter(torch.tensor(0.1), requires_grad=True)
+        # self.k = nn.Parameter(torch.tensor(0.1), requires_grad=True)
 
     def set_cutoffs(self, cutoff, cutoff_qint, cutoff_aeaint, cutoff_aint):
         self.cutoff = cutoff
