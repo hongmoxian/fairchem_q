@@ -117,10 +117,10 @@ class QEqModule(nn.Module):
         self.charge_mlp.initialize_weights()
         
         # 添加可训练的电荷偏置参数
-        self.charge_biases = nn.ParameterDict({
-            elem: nn.Parameter(torch.tensor([bias], dtype=torch.float32))
-            for elem, bias in self.target_charge_dict.items()
-        })
+        # self.charge_biases = nn.ParameterDict({
+        #     elem: nn.Parameter(torch.tensor([bias], dtype=torch.float32))
+        #     for elem, bias in self.target_charge_dict.items()
+        # })
 
     def initialize_charge_mlp(self, node_feat, inputs):
         """
