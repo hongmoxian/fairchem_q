@@ -86,4 +86,5 @@ def main():
         logging.info(f"Experiment log saved to: {log_file}")
 
     else:  # Run locally
+        logging.info(f"this version is q-qeq")
         Runner()(config)
