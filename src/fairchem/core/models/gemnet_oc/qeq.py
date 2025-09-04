@@ -600,6 +600,8 @@ class QEqModule(nn.Module):
             #    A[N, N] = 0    -> 拉格朗日乘子项系数为0
             A_aug[-1, :N] = 1.0      # 填充最后一行的前N列
             A_aug[:N, -1] = 1.0      # 填充最后N行的最后一列
+            diag_indices = torch.arange(N)
+            A_aug[diag_indices, diag_indices] += eta[atom_indices_in_sys]  # 对角线元素乘以2
             # A_aug[N, N] 默认为 0.0
 
             # -- 填充 b_aug --
