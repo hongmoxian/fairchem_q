@@ -114,7 +114,7 @@ class QEqModule(nn.Module):
         self.electronegativity_mlp = MLP(256, self.electronegativity_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
         self.hardness_mlp = MLP(256, self.hardness_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
         self.charge_mlp = MLP(256+1, self.charge_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
-        self.charge_mlp.initialize_weights()
+        # self.charge_mlp.initialize_weights()
         
         # 添加可训练的电荷偏置参数
         # self.charge_biases = nn.ParameterDict({
@@ -186,7 +186,7 @@ class QEqModule(nn.Module):
         #         charge[indices] = charge[indices] + self.charge_biases[elem]
         
         # 应用tanh限制
-        # charge = self.charge_ub * torch.tanh(charge / self.charge_ub)
+        charge = self.charge_ub * torch.tanh(charge / self.charge_ub)
         
         # 计算电负性，用于加权
         # pred_electronegativity = self.electronegativity_mlp(node_feat).squeeze(-1)
@@ -314,7 +314,103 @@ class QEqModule(nn.Module):
         # print(f"Coulomb force (post-aggregation) range: {coul_force.min():.3e} - {coul_force.max():.3e} eV/Å")
 
         return coul_energy, coul_force
-    
+
+    # def get_coulomb_energy_ewald(self, row, col, dij, pred_charge, inputs=None, r_cutoff=6.0, sigma=2.2, accuracy=1e-5):
+        """
+        计算库仑相互作用能量
+        """
+        # self.real_space = 0
+        # self.reciprocal_space = 0
+        # self.self_energy = 0
+        # self.corr_energy = 0
+
+        # dij_meter = dij * ANGSTROM_TO_METER
+        # # eta = torch.sqrt(-torch.log(accuracy)) / r_cutoff
+        # eta = torch.sqrt(-torch.log(accuracy)) / r_cutoff
+        # kmax = torch.ceil(2 * eta * torch.sqrt(- torch.log(accuracy))).int()
+
+
+        # a = torch.erfc(dij_meter * eta/ dij_meter)
+        # b = a * pred_charge[row] * pred_charge[col]
+        # self.real_space += torch.sum(b) * 0.5
+
+        # self.self_energy += -torch.sum(pred_charge ** 2 / torch.sqrt(torch.pi) * eta) 
+
+        # k = torch.arange(-kmax, kmax+1)
+        # kx, ky, kz = torch.meshgrid(k, k, k, indexing='ij')
+        # k_vecs = 2 * np.pi * torch.stack([kx, ky, kz], dim=-1) / inputs.cell
+        # V = torch.prod(inputs.cell)
+        # k_vecs = k_vecs.reshape(-1, 3)
+        # c = (torch.exp(1j * k_vecs @ inputs.pos.T) @ pred_charge)**2 
+        # d = torch.exp(-torch.norm(k_vecs, dim=-1)**2 / (4 * eta**2)) / torch.norm(k_vecs, dim=-1)**2 / V / (2 * torch.pi)
+
+        # self.reciprocal_space += torch.sum(c * d)
+
+        # self.corr_energy += -torch.pi * torch.sum(pred_charge) ** 2 / ( 2* eta**2 * V)
+
+    def get_coulomb_energy_ewald(self, row, col, dij, pred_charge, inputs=None, r_cutoff=6.0, accuracy=1e-5):
+        """
+        完全基于α参数的Ewald求和计算（四项能量）
+        """
+        # 初始化能量项
+        self.real_space = 0.0
+        self.reciprocal_space = 0.0
+        self.self_energy = 0.0
+        self.corr_energy = 0.0
+
+        # 单位转换和参数计算（仅使用α）
+        dij_meter = dij * ANGSTROM_TO_METER
+        alpha = torch.sqrt(-torch.log(torch.tensor(accuracy))) / r_cutoff  # 直接定义α
+        
+        # 非正交晶胞体积和倒易基矢
+        cell = inputs.cell  # [3,3]张量，每行是一个晶胞向量
+        V = torch.abs(torch.det(cell))  # 行列式计算体积
+        B = 2 * torch.pi * torch.linalg.inv(cell).T  # 倒易基矢矩阵[3,3]
+
+        # 1. 实空间项：erfc(αr_ij)/r_ij
+        mask = (dij_meter > 1e-10) & (dij_meter < r_cutoff)
+        dij_safe = dij_meter[mask] + 1e-10
+        erfc_term = torch.erfc(alpha * dij_safe) / dij_safe  # 使用α
+        self.real_space = 0.5 * torch.sum(pred_charge[row[mask]] * pred_charge[col[mask]] * erfc_term)
+
+        # 2. 自能项：-α/√π Σq_i²
+        self.self_energy = - (alpha / torch.sqrt(torch.pi)) * torch.sum(pred_charge**2)
+
+        # 3. 倒易空间项：1/(2πV) Σ e^{-k²/(4α²)}/k² |S(k)|²
+        kmax = torch.ceil(2 * alpha * torch.sqrt(-torch.log(torch.tensor(accuracy)))).int()
+        k = torch.arange(-kmax, kmax+1, device=dij_meter.device)
+        kx, ky, kz = torch.meshgrid(k, k, k, indexing='ij')
+        k_grid = torch.stack([kx, ky, kz], dim=-1).reshape(-1, 3)  # [n_k,3]整数网格
+        k_vecs = k_grid @ B.T  # 转换为真实k矢量[3,3]
+        
+        # 排除k=0
+        k_norms = torch.norm(k_vecs, dim=1)
+        non_zero_mask = k_norms > 1e-10
+        k_vecs = k_vecs[non_zero_mask]
+        k_norms = k_norms[non_zero_mask]
+
+        # 计算结构因子S(k)
+        k_dot_r = torch.matmul(k_vecs, inputs.pos.T)  # [n_k, n_atoms]
+        S_k = torch.matmul(torch.exp(1j * k_dot_r), pred_charge)  # [n_k]
+        
+        # 倒易空间能量系数
+        coeff = torch.exp(-k_norms**2 / (4 * alpha**2)) / (k_norms**2 * V * 2 * torch.pi)  # 使用α²
+        self.reciprocal_space = torch.sum(torch.abs(S_k)**2 * coeff)
+
+        # 4. 表面校正项：-πQ²/(2α²V)
+        Q_tot = torch.sum(pred_charge)
+        if abs(Q_tot) > 1e-10:
+            self.corr_energy = - (torch.pi * Q_tot**2) / (2 * alpha**2 * V)  # 使用α²
+
+        # 总库仑能
+        total_energy = self.real_space + self.reciprocal_space + self.self_energy + self.corr_energy
+        return total_energy
+
+
+
+
+
+
     def get_qeq_force(self, charge_energy, inputs, row, col, natoms, grad_outputs=None):
         """
         通过自动微分计算电荷能量对位置的梯度，得到力
@@ -390,7 +486,7 @@ class QEqModule(nn.Module):
         scale_factor = 1.0  # 可以根据需要调整
         
         electronegativity_energy = scale_factor * (
-            -pred_electronegativity * pred_charge + 
+            pred_electronegativity * pred_charge + 
             0.5 * pred_electronegativity_hardness * pred_charge * pred_charge
         )
         
@@ -400,18 +496,18 @@ class QEqModule(nn.Module):
         # 电负性能量已经是 eV 量级，不需要额外转换
         return electronegativity_energy
 
-    def get_electronegativity(self, inputs):
+    def get_electronegativity(self, node_feat):
         """
         计算电负性
         :param node_feat: 节点特征
         :param inputs: 输入数据，包含mol_ids
         :return: 电负性
         """
-        # pred_electronegativity = self.electronegativity_mlp(node_feat).squeeze(-1)
-        # pred_electronegativity_hardness = self.hardness_mlp(node_feat).squeeze(-1)
+        pred_electronegativity = self.electronegativity_mlp(node_feat).squeeze(-1)
+        pred_electronegativity_hardness = self.hardness_mlp(node_feat).squeeze(-1)
         # name2chi.get(data.atomic_number)
-        pred_electronegativity = torch.tensor([name2chi[chemical_symbols[int(i)]] for i in inputs['atomic_numbers']], device=inputs['atomic_numbers'].device)
-        pred_electronegativity_hardness = torch.tensor([name2eta[chemical_symbols[int(i)]] for i in inputs['atomic_numbers']], device=inputs['atomic_numbers'].device)
+        # pred_electronegativity = torch.tensor([name2chi[chemical_symbols[int(i)]] for i in inputs['atomic_numbers']], device=inputs['atomic_numbers'].device)
+        # pred_electronegativity_hardness = torch.tensor([name2eta[chemical_symbols[int(i)]] for i in inputs['atomic_numbers']], device=inputs['atomic_numbers'].device)
         return pred_electronegativity, pred_electronegativity_hardness
 
     def get_charge_energy(self, node_feat, row, col, dij, inputs, g_ewald=None):
