@@ -1338,8 +1338,9 @@ class GemNetOC(BaseModel):
         mol_energy = mol_energy.squeeze(-1)  # (nMolecules,)
         
         # 使用模型的x_E来预测电荷
-        chi, eta = self.qeq_module.get_electronegativity(data)
+        chi, eta = self.qeq_module.get_electronegativity(x_E)
         pre_charge = self.qeq_module.solve_qeq_linear_system(chi, eta, pos, batch, data.charge, main_graph["edge_index"])
+        # total_charge = scatter_det(pre_charge, batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules,)
         
         # 计算静电能和力
         coul_energy, coul_force = self.qeq_module.get_coulomb_energy(
