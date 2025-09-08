@@ -249,6 +249,8 @@ class OCPTrainer(BaseTrainer):
         batch_size = batch.natoms.numel()
         num_atoms_in_batch = batch.natoms.sum()
         for target_key in self.output_targets:
+            if target_key == 'charge_energy' or 'lambda_sol':
+                continue
             ### Target property is a direct output of the model
             if target_key in out:
                 pred = out[target_key]

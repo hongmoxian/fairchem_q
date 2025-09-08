@@ -597,7 +597,7 @@ class QEqModule(nn.Module):
             # --- 1. 计算Ewald参数 ---
             alpha = torch.sqrt(-torch.log(torch.tensor(accuracy, device=device))) / r_cutoff
             V = torch.abs(torch.det(cell))
-            B = 2 * torch.pi * torch.linalg.inv(cell).T
+            B = 2 * torch.pi * torch.linalg.inv(cell).T.to(dtype)
 
             # --- 2. 实空间项 (只影响非对角线元素) ---
             pos_meter = pos * ANGSTROM_TO_METER
@@ -616,7 +616,7 @@ class QEqModule(nn.Module):
             kmax = torch.ceil(2 * alpha * torch.sqrt(-torch.log(torch.tensor(accuracy, device=device)))).int()
             k = torch.arange(-kmax, kmax + 1, device=device)
             kx, ky, kz = torch.meshgrid(k, k, k, indexing='ij')
-            k_grid = torch.stack([kx, ky, kz], dim=-1).reshape(-1, 3)
+            k_grid = torch.stack([kx, ky, kz], dim=-1).reshape(-1, 3).to(torch.float32)
             k_vecs = k_grid @ B.T
             k_norms = torch.norm(k_vecs, dim=1)
             non_zero_mask = k_norms > 1e-10
@@ -629,14 +629,19 @@ class QEqModule(nn.Module):
             reciprocal_diag = torch.sum(coeff)  # 对所有k点求和
             
             # 自能项
-            self_energy = -alpha / torch.sqrt(torch.pi)
+            self_energy = -alpha / torch.sqrt(torch.tensor(torch.pi, dtype=dtype))
             
             # 将对角线元素设置为: A_ii = 自能项 + 倒易空间项
             A.diagonal().copy_(self_energy + reciprocal_diag)
             
             # --- 4. 化学硬度项 (根据文献公式添加到对角线) ---
             # 根据文献: M_ii = A_ii + J_i
-            A.diagonal() += eta
+            # A.diagonal() += eta
+            diag = A.diagonal()  # 获取对角线视图
+            # if eta.shape[0] < diag.shape[0]:
+            #     eta = torch.cat([eta, torch.zeros(diag.shape[0] - eta.shape[0], device=device)])
+            diag += eta
+            # diag += eta          # 合法操作（视图支持原位修改）
 
             # --- 5. 构建增广矩阵 (添加约束) ---
             A_aug = torch.zeros((num_atoms + 1, num_atoms + 1), dtype=dtype, device=device)
@@ -647,7 +652,7 @@ class QEqModule(nn.Module):
 
             return A_aug
 
-        N = inputs.batch.max() + 1
+        N = len(inputs.batch)
         cell = inputs.cell.view(3, 3) 
         A_aug = build_qeq_matrix_A(eta, pos, cell, 6, 10-5)
         b_aug = torch.zeros(N + 1, dtype=dtype, device=device)           # [N+1]
@@ -657,20 +662,20 @@ class QEqModule(nn.Module):
             # --- e. 求解线性方程组 A_aug * x_aug = b_aug ---
             #     x_aug = [q0, q1, ..., q(N-1), lambda]
             #     我们只需要前 N 个解，即原子电荷 q_eq
-        try:
+        # try:
             # 使用 LU 分解求解稠密线性系统 (推荐)
             # torch.linalg.solve 返回 x 使得 Ax = b
-            x_aug_solution = torch.linalg.solve(A_aug, b_aug.unsqueeze(1)) # solve 需要列向量
-            mol_q_eq = x_aug_solution[:N, 0] # 取解向量的前 N 个元素作为电荷 [N]
-            lambda_sol = x_aug_solution[N, 0] # (通常不需要拉格朗日乘子)
+        x_aug_solution = torch.linalg.solve(A_aug, b_aug.unsqueeze(1)) # solve 需要列向量
+        mol_q_eq = x_aug_solution[:N, 0] # 取解向量的前 N 个元素作为电荷 [N]
+        lambda_sol = x_aug_solution[N, 0] # (通常不需要拉格朗日乘子)
 
-        except torch.linalg.LinAlgError as e:
-            # 如果矩阵是奇异的 (不可逆)，则使用伪逆 (SVD) 来求解 (更鲁棒)
-            print(f"Warning: Singular matrix for system {sys_idx}. Using pseudo-inverse.")
-            # 计算 A_aug 的伪逆
-            A_pinv = torch.linalg.pinv(A_aug)
-            # 用伪逆求解 x_aug = A_pinv * b_aug
-            x_aug_solution = A_pinv @ b_aug.unsqueeze(1)
-            mol_q_eq = x_aug_solution[:N, 0] # [N]
+        # except torch.linalg.LinAlgError as e:
+        #     # 如果矩阵是奇异的 (不可逆)，则使用伪逆 (SVD) 来求解 (更鲁棒)
+        #     print(f"Warning: Singular matrix for system. Using pseudo-inverse.")
+        #     # 计算 A_aug 的伪逆
+        #     A_pinv = torch.linalg.pinv(A_aug)
+        #     # 用伪逆求解 x_aug = A_pinv * b_aug
+        #     x_aug_solution = A_pinv @ b_aug.unsqueeze(1)
+        #     mol_q_eq = x_aug_solution[:N, 0] # [N]
 
         return mol_q_eq, lambda_sol
