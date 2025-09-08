@@ -176,7 +176,8 @@ class OCPTrainer(BaseTrainer):
                         "step": self.step,
                         "w": out['w'].mean().item(),
                         "q": out['charge'][0].item(),
-                        "charge_energy": out['charge_energy'][0].item()
+                        "charge_energy": out['charge_energy'][0].item(),
+                        "lambda_sol": out['lambda_sol'][0].item(),
                     }
                 )
 
@@ -296,6 +297,7 @@ class OCPTrainer(BaseTrainer):
         outputs['charge'] = out.get('charge', None)
         outputs['charge_energy'] = out.get('charge_energy', None)
         outputs['w'] = out.get('w', None)
+        outputs['lambda_sol'] = out.get('lambda_sol', None)
         # outputs['qeq_force'] = out.get('qeq_force', None)
 
         return outputs
@@ -413,7 +415,7 @@ class OCPTrainer(BaseTrainer):
 
             return loss
         
-        # if calc_qeq:
+        if calc_qeq:
         #     # eqemodel = self.model.qeq_module
         #     # grad_outputs = torch.ones_like(out['charge_energy'])
         #     # out['qeq_force'] = -1 * eqemodel.get_qeq_force(out['charge_energy'], out['pre_charge'], grad_outputs=grad_outputs)
@@ -426,10 +428,10 @@ class OCPTrainer(BaseTrainer):
         #     # self.loss_dict['qeq_loss'] = out['qeq_force'] * 300
         #     # loss.append()
         #     # self.loss_dict['en_loss'] = electronegativity_rank_loss(out['charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
-        #     loss_w = torch.mean(torch.abs(out['w'] - 4.44 - batch.mu ))
-        #     self.loss_dict['loss_w'] = loss_w
+            loss_w = torch.mean(torch.abs(out['w'] - 4.44 - batch.mu ))
+            self.loss_dict['loss_w'] = loss_w * 100
         #     loss.append(loss_w)
-            # loss.append(loss_w * 100)
+            loss.append(loss_w * 100)
             # self.loss_dict['loss_w'] = loss_w * 1000
         # Sanity check to make sure the compute graph is correct.
         for lc in loss:

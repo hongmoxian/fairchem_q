@@ -363,7 +363,7 @@ class QEqModule(nn.Module):
         alpha = torch.sqrt(-torch.log(torch.tensor(accuracy))) / r_cutoff  # 直接定义α
         
         # 非正交晶胞体积和倒易基矢
-        cell = inputs.cell  # [3,3]张量，每行是一个晶胞向量
+        cell = inputs.cell.view(3, 3)  # [3,3]张量，每行是一个晶胞向量
         V = torch.abs(torch.det(cell))  # 行列式计算体积
         B = 2 * torch.pi * torch.linalg.inv(cell).T  # 倒易基矢矩阵[3,3]
 
@@ -538,7 +538,7 @@ class QEqModule(nn.Module):
         q_eq = self.solve_qeq_linear_system(chi, eta, pos, batch, Q_total, edge_index, edge_weight)
         return q_eq, chi, eta
 
-    def solve_qeq_linear_system(self, chi, eta, pos, batch, Q_total, edge_index=None, edge_weight=None):
+    def solve_qeq_linear_system(self, chi, eta, inputs, batch, Q_total, edge_index=None, edge_weight=None):
         """
         使用矩阵求逆法 (实际上是求解线性方程组 Ax=b) 来求解 QEq 方程。
 
@@ -564,6 +564,7 @@ class QEqModule(nn.Module):
         Returns:
             q_eq (torch.Tensor): [num_atoms] 求解得到的符合约束的原子电荷。
         """
+        pos = inputs.pos
         device = pos.device
         dtype = pos.dtype
         num_atoms = pos.shape[0]                        # 总原子数
@@ -572,170 +573,104 @@ class QEqModule(nn.Module):
         ANGSTROM_TO_METER = 1e-10                       # Angstrom 到 Meter 的转换因子
         COULOMB_CONSTANT = 8.9875517923e9              # 库仑常数 (N m^2 C^-2)
 
-        # 2. 构建邻接表 (如果未提供)
-        #    邻接表定义了哪些原子对之间存在库仑相互作用。
-        #    如果没有提供，一个简单但低效的方法是为每个体系构建一个全连接图。
-        if edge_index is None:
-            # --- 为每个体系构建全连接图 ---
-            mol_atom_indices = [] # 存储每个体系的原子全局索引
-            for sys_idx in range(num_systems):
-                atom_indices_in_sys = torch.where(batch == sys_idx)[0] # 找到属于体系 sys_idx 的所有原子的索引
-                mol_atom_indices.append(atom_indices_in_sys)
+        def build_qeq_matrix_A(eta, pos, cell, r_cutoff=6.0, accuracy=1e-5):
+            """
+            根据文献公式正确构造QEq方程的矩阵A
+            
+            Args:
+                eta (torch.Tensor): [num_atoms] 化学硬度 J_i
+                pos (torch.Tensor): [num_atoms, 3] 原子坐标
+                cell (torch.Tensor): [3, 3] 晶胞向量
+                r_cutoff, accuracy: Ewald参数
+            
+            Returns:
+                A_aug (torch.Tensor): [num_atoms + 1, num_atoms + 1] 增广矩阵
+            """
+            device = pos.device
+            dtype = pos.dtype
+            num_atoms = pos.shape[0]
+            ANGSTROM_TO_METER = 1e-10
 
-            all_rows = []
-            all_cols = []
-            for atom_indices_in_sys in mol_atom_indices:
-                n_atoms_in_sys = atom_indices_in_sys.shape[0]
-                if n_atoms_in_sys > 1: # 至少需要两个原子才能形成边
-                    # 使用 torch.meshgrid 生成体系内所有原子对的索引
-                    # indexing='ij' 确保了正确的笛卡尔积顺序
-                    rows_sys, cols_sys = torch.meshgrid(atom_indices_in_sys, atom_indices_in_sys, indexing='ij')
-                    # 只保留上三角部分 (i < j) 来避免重复边 (i-j 和 j-i 是同一条边)
-                    # 并且排除自环 (i == j)
-                    mask_upper_triangular = rows_sys < cols_sys
-                    all_rows.append(rows_sys[mask_upper_triangular])
-                    all_cols.append(cols_sys[mask_upper_triangular])
+            # 初始化矩阵A (不包括约束)
+            A = torch.zeros((num_atoms, num_atoms), dtype=dtype, device=device)
 
-            if all_rows:
-                # 将所有体系的边索引连接起来
-                edge_index = torch.stack([torch.cat(all_rows), torch.cat(all_cols)], dim=0) # [2, total_num_edges]
-            else:
-                # 如果没有任何边 (例如所有体系都只有0或1个原子)
-                edge_index = torch.empty((2, 0), dtype=torch.long, device=device) # [2, 0]
+            # --- 1. 计算Ewald参数 ---
+            alpha = torch.sqrt(-torch.log(torch.tensor(accuracy, device=device))) / r_cutoff
+            V = torch.abs(torch.det(cell))
+            B = 2 * torch.pi * torch.linalg.inv(cell).T
 
-        # 3. 计算边权重 (库仑核 1/r) (如果未提供)
-        #    边权重通常是 1/r_ij，代表原子 i 和 j 之间的库仑相互作用强度 (忽略电荷)。
-        if edge_weight is None and edge_index.shape[1] > 0:
-            # 获取边连接的原子坐标
-            pos_i = pos[edge_index[0]]  # [num_edges, 3] 源原子坐标
-            pos_j = pos[edge_index[1]]  # [num_edges, 3] 目标原子坐标
-            # 计算相对位移向量
-            rij_vec = pos_i - pos_j     # [num_edges, 3]
-            # 计算欧几里得距离 (单位: Angstrom)
-            rij_angstrom = torch.norm(rij_vec, dim=1) # [num_edges]
-            # 转换为米 (SI单位)
-            rij_meter = rij_angstrom * ANGSTROM_TO_METER # [num_edges]
-            # 避免除以零或非常小的距离
-            rij_meter = torch.clamp(rij_meter, min=1e-12)
-            # 计算库仑核 k_e / r_ij (单位: N*m^2/C^2 / m = N*m/C^2)
-            # 注意：这里的 k_e / r_ij 还没有乘以 q_i * q_j
-            coulomb_kernel = COULOMB_CONSTANT / rij_meter # [num_edges]
-            edge_weight = coulomb_kernel # [num_edges]
-        elif edge_index.shape[1] == 0:
-            # 如果没有边，边权重也为空
-            edge_weight = torch.empty(0, dtype=dtype, device=device) # [0]
+            # --- 2. 实空间项 (只影响非对角线元素) ---
+            pos_meter = pos * ANGSTROM_TO_METER
+            dij = torch.norm(pos_meter.unsqueeze(1) - pos_meter.unsqueeze(0), dim=2)
+            
+            # 只处理i ≠ j的情况
+            for i in range(num_atoms):
+                for j in range(num_atoms):
+                    if i != j and dij[i, j] > 1e-10 and dij[i, j] < r_cutoff:
+                        dij_safe = dij[i, j] + 1e-10
+                        erfc_term = torch.erfc(alpha * dij_safe) / dij_safe
+                        A[i, j] += erfc_term
 
-        # 4. 为每个体系分别求解 QEq 方程
-        #    因为不同体系之间没有相互作用，所以可以独立求解。
-        q_eq_solutions = [] # 用于存储每个体系求解出的电荷
-        num_edges_total = edge_index.shape[1]
+            # --- 3. 自能项和倒易空间项 (只影响对角线元素) ---
+            # 计算倒易空间项的对角线部分
+            kmax = torch.ceil(2 * alpha * torch.sqrt(-torch.log(torch.tensor(accuracy, device=device)))).int()
+            k = torch.arange(-kmax, kmax + 1, device=device)
+            kx, ky, kz = torch.meshgrid(k, k, k, indexing='ij')
+            k_grid = torch.stack([kx, ky, kz], dim=-1).reshape(-1, 3)
+            k_vecs = k_grid @ B.T
+            k_norms = torch.norm(k_vecs, dim=1)
+            non_zero_mask = k_norms > 1e-10
+            k_vecs = k_vecs[non_zero_mask]
+            k_norms = k_norms[non_zero_mask]
 
-        # 遍历每一个体系
-        for sys_idx in range(num_systems):
+            coeff = torch.exp(-k_norms**2 / (4 * alpha**2)) / (k_norms**2 * V * torch.pi)
+            
+            # 倒易空间项只影响对角线元素
+            reciprocal_diag = torch.sum(coeff)  # 对所有k点求和
+            
+            # 自能项
+            self_energy = -alpha / torch.sqrt(torch.pi)
+            
+            # 将对角线元素设置为: A_ii = 自能项 + 倒易空间项
+            A.diagonal().copy_(self_energy + reciprocal_diag)
+            
+            # --- 4. 化学硬度项 (根据文献公式添加到对角线) ---
+            # 根据文献: M_ii = A_ii + J_i
+            A.diagonal() += eta
 
-            # --- a. 确定当前体系的原子 ---
-            atom_indices_in_sys = torch.where(batch == sys_idx)[0] # [n_atoms_in_this_system]
-            n_atoms_in_sys = atom_indices_in_sys.shape[0]          # 当前体系的原子数
+            # --- 5. 构建增广矩阵 (添加约束) ---
+            A_aug = torch.zeros((num_atoms + 1, num_atoms + 1), dtype=dtype, device=device)
+            A_aug[:num_atoms, :num_atoms] = A  # 主矩阵部分
+            A_aug[-1, :num_atoms] = 1.0        # 约束行
+            A_aug[:num_atoms, -1] = 1.0        # 约束列
+            A_aug[-1, -1] = 0.0                # 右下角
 
-            # 如果体系中没有原子，则跳过
-            if n_atoms_in_sys == 0:
-                continue
+            return A_aug
 
-            # --- b. 提取当前体系的相关数据 ---
-            mol_chi = chi[atom_indices_in_sys]          # [n_atoms_in_sys] 当前体系原子的电负性
-            mol_eta = eta[atom_indices_in_sys]          # [n_atoms_in_sys] 当前体系原子的硬度
-            mol_Q_total = Q_total[sys_idx]              # 标量，当前体系的目标总电荷
-
-            # --- c. 提取当前体系内部的边 (邻居) ---
-            #     找到所有连接当前体系内原子的边
-            #     edge_index 中的源和目标原子索引都必须在 atom_indices_in_sys 内
-            if num_edges_total > 0:
-                # 创建一个掩码，标记哪些边连接的是当前体系内的原子
-                mask_edge_in_sys = (edge_index[0, :] >= atom_indices_in_sys[0]) & \
-                                    (edge_index[0, :] <= atom_indices_in_sys[-1]) & \
-                                    (edge_index[1, :] >= atom_indices_in_sys[0]) & \
-                                    (edge_index[1, :] <= atom_indices_in_sys[-1])
-                # 获取当前体系内的边索引（全局索引）
-                mol_edge_index_global = edge_index[:, mask_edge_in_sys] # [2, num_edges_in_this_mol]
-                # 将全局索引转换为当前体系内的局部索引 (0 到 n_atoms_in_sys-1)
-                mol_edge_index_local = mol_edge_index_global - atom_indices_in_sys[0] # [2, num_edges_in_this_mol]
-                # 获取当前体系内边的权重
-                mol_edge_weight = edge_weight[mask_edge_in_sys]       # [num_edges_in_this_mol]
-            else:
-                mol_edge_index_local = torch.empty((2, 0), dtype=torch.long, device=device) # [2, 0]
-                mol_edge_weight = torch.empty(0, dtype=dtype, device=device) # [0]
-
-            num_edges_in_sys = mol_edge_index_local.shape[1]
-
-            # --- d. 构造增广矩阵 A_aug 和向量 b_aug ---
-            #     对于 N 个原子，A_aug 是 (N+1) x (N+1)，b_aug 是 (N+1)
-            N = n_atoms_in_sys
-            # 初始化矩阵和向量
-            A_aug = torch.zeros((N + 1, N + 1), dtype=dtype, device=device) # [(N+1), (N+1)]
-            b_aug = torch.zeros(N + 1, dtype=dtype, device=device)           # [N+1]
-
-            # -- 填充 A_aug --
-            # 1. 对角线部分 A[i,i] = eta[i] (化学硬度)
-            #    这代表原子 i 本身抵抗电荷变化的能量代价
-            A_aug[:N, :N].fill_diagonal_(0) # (可选) 先清零对角线
-            A_aug[:N, :N].diagonal().copy_(mol_eta) # 填充对角线元素
-
-            # 2. 非对角线部分 A[i,j] = A[j,i] = k_e / r_ij (库仑相互作用)
-            #    这代表原子 i 和 j 之间的静电排斥能
-            if num_edges_in_sys > 0:
-                # 获取边的源和目标局部索引
-                i_local, j_local = mol_edge_index_local[0, :], mol_edge_index_local[1, :] # [num_edges_in_sys]
-                w = mol_edge_weight # [num_edges_in_sys] 即 k_e / r_ij
-                # 由于矩阵是对称的，同时填充 A[i,j] 和 A[j,i]
-                A_aug[i_local, j_local] = w
-                A_aug[j_local, i_local] = w
-
-            # 3. 约束部分: 最后一行和最后一列用于实现 sum(q) = Q_total
-            #    A[N, 0:N] = 1  -> 1*q0 + 1*q1 + ... + 1*q(N-1) = Q_total
-            #    A[0:N, N] = 1  -> 同上 (矩阵对称性)
-            #    A[N, N] = 0    -> 拉格朗日乘子项系数为0
-            A_aug[-1, :N] = 1.0      # 填充最后一行的前N列
-            A_aug[:N, -1] = 1.0      # 填充最后N行的最后一列
-            diag_indices = torch.arange(N)
-            A_aug[diag_indices, diag_indices] += eta[atom_indices_in_sys]  # 对角线元素乘以2
-            # A_aug[N, N] 默认为 0.0
-
-            # -- 填充 b_aug --
-            # b_aug[0:N] = -chi[0:N]  -> 负的电负性作为驱动力
-            # b_aug[N] = Q_total      -> 约束值
-            b_aug[:N] = -mol_chi           # [N]
-            b_aug[N] = mol_Q_total         # 标量
+        N = inputs.batch.max() + 1
+        cell = inputs.cell.view(3, 3) 
+        A_aug = build_qeq_matrix_A(eta, pos, cell, 6, 10-5)
+        b_aug = torch.zeros(N + 1, dtype=dtype, device=device)           # [N+1]
+        b_aug[:N] = -chi           # [N]
+        b_aug[N] = Q_total         # 标量
 
             # --- e. 求解线性方程组 A_aug * x_aug = b_aug ---
             #     x_aug = [q0, q1, ..., q(N-1), lambda]
             #     我们只需要前 N 个解，即原子电荷 q_eq
-            try:
-                # 使用 LU 分解求解稠密线性系统 (推荐)
-                # torch.linalg.solve 返回 x 使得 Ax = b
-                x_aug_solution = torch.linalg.solve(A_aug, b_aug.unsqueeze(1)) # solve 需要列向量
-                mol_q_eq = x_aug_solution[:N, 0] # 取解向量的前 N 个元素作为电荷 [N]
-                lambda_sol = x_aug_solution[N, 0] # (通常不需要拉格朗日乘子)
+        try:
+            # 使用 LU 分解求解稠密线性系统 (推荐)
+            # torch.linalg.solve 返回 x 使得 Ax = b
+            x_aug_solution = torch.linalg.solve(A_aug, b_aug.unsqueeze(1)) # solve 需要列向量
+            mol_q_eq = x_aug_solution[:N, 0] # 取解向量的前 N 个元素作为电荷 [N]
+            lambda_sol = x_aug_solution[N, 0] # (通常不需要拉格朗日乘子)
 
-            except torch.linalg.LinAlgError as e:
-                # 如果矩阵是奇异的 (不可逆)，则使用伪逆 (SVD) 来求解 (更鲁棒)
-                print(f"Warning: Singular matrix for system {sys_idx}. Using pseudo-inverse.")
-                # 计算 A_aug 的伪逆
-                A_pinv = torch.linalg.pinv(A_aug)
-                # 用伪逆求解 x_aug = A_pinv * b_aug
-                x_aug_solution = A_pinv @ b_aug.unsqueeze(1)
-                mol_q_eq = x_aug_solution[:N, 0] # [N]
+        except torch.linalg.LinAlgError as e:
+            # 如果矩阵是奇异的 (不可逆)，则使用伪逆 (SVD) 来求解 (更鲁棒)
+            print(f"Warning: Singular matrix for system {sys_idx}. Using pseudo-inverse.")
+            # 计算 A_aug 的伪逆
+            A_pinv = torch.linalg.pinv(A_aug)
+            # 用伪逆求解 x_aug = A_pinv * b_aug
+            x_aug_solution = A_pinv @ b_aug.unsqueeze(1)
+            mol_q_eq = x_aug_solution[:N, 0] # [N]
 
-            # 将当前体系的解存入列表
-            q_eq_solutions.append(mol_q_eq)
-
-        # 5. 合并所有体系的解
-        #    将所有体系的 q_eq 向量按原子在全局列表中的顺序连接起来
-        if q_eq_solutions:
-            # torch.cat 在第0维 (原子数维度) 连接
-            q_eq = torch.cat(q_eq_solutions, dim=0) # [num_atoms]
-        else:
-            # 如果没有任何原子 (理论上不应该发生)，返回空张量
-            q_eq = torch.empty(0, dtype=dtype, device=device) # [0]
-
-        # 返回最终的原子电荷 q_eq
-        return q_eq # [num_atoms]
+        return mol_q_eq, lambda_sol
