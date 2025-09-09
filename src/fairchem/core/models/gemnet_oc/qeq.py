@@ -348,9 +348,10 @@ class QEqModule(nn.Module):
 
         # self.corr_energy += -torch.pi * torch.sum(pred_charge) ** 2 / ( 2* eta**2 * V)
 
-    def get_coulomb_energy_ewald(self, row, col, dij, pred_charge, inputs=None, r_cutoff=6.0, accuracy=1e-5):
+    def get_coulomb_energy_ewald(self, row, col, dij_vec, pred_charge, inputs=None, r_cutoff=6.0, accuracy=1e-5):
         """
-        完全基于α参数的Ewald求和计算（四项能量）
+        使用α参数的Ewald求和计算（四项能量）
+        使用埃（Å）作为基本单位，避免复数运算
         """
         # 初始化能量项
         self.real_space = 0.0
@@ -358,52 +359,91 @@ class QEqModule(nn.Module):
         self.self_energy = 0.0
         self.corr_energy = 0.0
 
-        # 单位转换和参数计算（仅使用α）
-        dij_meter = dij * ANGSTROM_TO_METER
-        alpha = torch.sqrt(-torch.log(torch.tensor(accuracy))) / r_cutoff  # 直接定义α
+        # 单位转换常数 (使用Å单位)
+        EV_ANGSTROM = 14.399645  # 转换因子: (e²/(4πε₀)) in eV·Å
+
+        # 直接使用Å单位
+        r_cutoff_ang = r_cutoff
+
+        # 计算距离 (从矢量计算)
+        dij_ang = torch.norm(dij_vec, dim=1)  # [num_edges]
+
+        # 计算α参数 (单位: 1/Å)
+        alpha = torch.sqrt(-torch.log(torch.tensor(accuracy))) / r_cutoff_ang
+
+        # 晶胞处理 (单位: Å)
+        cell = inputs.cell.view(3, 3)
+        V = torch.abs(torch.det(cell))  # 体积 (Å³)
         
-        # 非正交晶胞体积和倒易基矢
-        cell = inputs.cell.view(3, 3)  # [3,3]张量，每行是一个晶胞向量
-        V = torch.abs(torch.det(cell))  # 行列式计算体积
-        B = 2 * torch.pi * torch.linalg.inv(cell).T  # 倒易基矢矩阵[3,3]
+        # 计算倒易基矢 (1/Å)，注意这里不需要2π因子
+        B = torch.linalg.inv(cell).T
 
-        # 1. 实空间项：erfc(αr_ij)/r_ij
-        mask = (dij_meter > 1e-10) & (dij_meter < r_cutoff)
-        dij_safe = dij_meter[mask] + 1e-10
+        # 1. 实空间项 (只考虑在截断半径内的原子对)
+        mask = (dij_ang > 1e-11) & (dij_ang < r_cutoff_ang)
+        dij_safe = dij_ang[mask] + 1e-11
         erfc_term = torch.erfc(alpha * dij_safe) / dij_safe  # 使用α
-        self.real_space = 0.5 * torch.sum(pred_charge[row[mask]] * pred_charge[col[mask]] * erfc_term)
+        
+        # 只计算符合条件的原子对
+        row_masked = row[mask]
+        col_masked = col[mask]
+        self.real_space = 0.5 * torch.sum(
+            pred_charge[row_masked] * pred_charge[col_masked] * erfc_term
+        )
 
-        # 2. 自能项：-α/√π Σq_i²
-        self.self_energy = - (alpha / torch.sqrt(torch.pi)) * torch.sum(pred_charge**2)
+        # 2. 自能项 (使用α)
+        self.self_energy = - (alpha / torch.sqrt(torch.tensor(torch.pi).to(torch.float32))) * torch.sum(pred_charge**2)
 
-        # 3. 倒易空间项：1/(2πV) Σ e^{-k²/(4α²)}/k² |S(k)|²
+        # 3. 倒易空间项 (使用α参数和K²计算，避免复数运算)
+        # 计算k网格
         kmax = torch.ceil(2 * alpha * torch.sqrt(-torch.log(torch.tensor(accuracy)))).int()
-        k = torch.arange(-kmax, kmax+1, device=dij_meter.device)
+        k = torch.arange(-kmax, kmax+1, device=dij_ang.device)
         kx, ky, kz = torch.meshgrid(k, k, k, indexing='ij')
-        k_grid = torch.stack([kx, ky, kz], dim=-1).reshape(-1, 3)  # [n_k,3]整数网格
-        k_vecs = k_grid @ B.T  # 转换为真实k矢量[3,3]
+        k_grid = torch.stack([kx, ky, kz], dim=-1).reshape(-1, 3).to(torch.float32)
+        
+        # 计算k矢量 (1/Å)，注意这里不需要2π因子
+        k_vecs = k_grid @ B.T
         
         # 排除k=0
         k_norms = torch.norm(k_vecs, dim=1)
-        non_zero_mask = k_norms > 1e-10
+        non_zero_mask = k_norms > 1e-11
         k_vecs = k_vecs[non_zero_mask]
         k_norms = k_norms[non_zero_mask]
+        k_norms_sq = k_norms**2  # K²计算
 
-        # 计算结构因子S(k)
+        # 计算结构因子 S(k) 的模平方，避免复数运算
         k_dot_r = torch.matmul(k_vecs, inputs.pos.T)  # [n_k, n_atoms]
-        S_k = torch.matmul(torch.exp(1j * k_dot_r), pred_charge)  # [n_k]
         
-        # 倒易空间能量系数
-        coeff = torch.exp(-k_norms**2 / (4 * alpha**2)) / (k_norms**2 * V * 2 * torch.pi)  # 使用α²
-        self.reciprocal_space = torch.sum(torch.abs(S_k)**2 * coeff)
+        # 使用三角函数计算实部和虚部
+        cos_kr = torch.cos(k_dot_r)  # [n_k, n_atoms]
+        sin_kr = torch.sin(k_dot_r)  # [n_k, n_atoms]
+        
+        # 计算实部和虚部的和
+        real_sum = torch.matmul(cos_kr, pred_charge)  # [n_k]
+        imag_sum = torch.matmul(sin_kr, pred_charge)  # [n_k]
+        
+        # 计算模平方 |S(k)|² = (实部和)² + (虚部和)²
+        S_k_sq = real_sum**2 + imag_sum**2  # [n_k]
 
-        # 4. 表面校正项：-πQ²/(2α²V)
+        # 按照图片中的公式计算倒易空间能量，但使用α参数
+        # 根据 η² = 1/(2α²) 的关系，将公式中的 η 替换为 α
+        # 原公式: exp(-η²|k|²/2) = exp(-(1/(2α²))|k|²/2) = exp(-|k|²/(4α²))
+        exp_term = torch.exp(-k_norms_sq / (4 * alpha**2))
+        coeff = (2 * torch.pi / V) * exp_term / k_norms_sq
+        self.reciprocal_space = torch.sum(S_k_sq * coeff)
+
+        # 4. 表面校正项 (使用α)
         Q_tot = torch.sum(pred_charge)
-        if abs(Q_tot) > 1e-10:
-            self.corr_energy = - (torch.pi * Q_tot**2) / (2 * alpha**2 * V)  # 使用α²
+        if abs(Q_tot) > 1e-11:
+            # 根据 η² = 1/(2α²) 的关系，将公式中的 η 替换为 α
+            # 原公式: - (π Q_tot²) / (2 η² V) = - (π Q_tot²) / (2 * (1/(2α²)) V) = - (π α² Q_tot²) / V
+            self.corr_energy = - (torch.pi * alpha**2 * Q_tot**2) / V
 
-        # 总库仑能
+        # 总能量 (单位: e²/Å)
         total_energy = self.real_space + self.reciprocal_space + self.self_energy + self.corr_energy
+
+        # 单位转换: e²/Å → eV
+        total_energy *= EV_ANGSTROM
+
         return total_energy
 
 
@@ -538,7 +578,7 @@ class QEqModule(nn.Module):
         q_eq = self.solve_qeq_linear_system(chi, eta, pos, batch, Q_total, edge_index, edge_weight)
         return q_eq, chi, eta
 
-    def solve_qeq_linear_system(self, chi, eta, inputs, batch, Q_total, edge_index=None, edge_weight=None):
+    def solve_qeq_linear_system(self, chi, eta, inputs, batch, Q_total, edge_index=None, edge_vec=None):
         """
         使用矩阵求逆法 (实际上是求解线性方程组 Ax=b) 来求解 QEq 方程。
 
@@ -573,24 +613,26 @@ class QEqModule(nn.Module):
         ANGSTROM_TO_METER = 1e-10                       # Angstrom 到 Meter 的转换因子
         COULOMB_CONSTANT = 8.9875517923e9              # 库仑常数 (N m^2 C^-2)
 
-        def build_qeq_matrix_A(eta, pos, cell, r_cutoff=6.0, accuracy=1e-5):
+        def build_qeq_matrix_A(eta, pos, cell, r_cutoff=6.0, accuracy=1e-5, edge_index=None, edge_vec=None):
             """
-            根据文献公式正确构造QEq方程的矩阵A
+            正确构造QEq方程的矩阵A，考虑周期性边界条件
             
             Args:
                 eta (torch.Tensor): [num_atoms] 化学硬度 J_i
                 pos (torch.Tensor): [num_atoms, 3] 原子坐标
                 cell (torch.Tensor): [3, 3] 晶胞向量
                 r_cutoff, accuracy: Ewald参数
+                edge_index (torch.Tensor): [2, num_edges] 边的索引
+                edge_vec (torch.Tensor): [num_edges, 3] 边矢量（考虑周期性）
             
             Returns:
                 A_aug (torch.Tensor): [num_atoms + 1, num_atoms + 1] 增广矩阵
             """
+            
             device = pos.device
             dtype = pos.dtype
             num_atoms = pos.shape[0]
-            ANGSTROM_TO_METER = 1e-10
-
+            
             # 初始化矩阵A (不包括约束)
             A = torch.zeros((num_atoms, num_atoms), dtype=dtype, device=device)
 
@@ -600,16 +642,36 @@ class QEqModule(nn.Module):
             B = 2 * torch.pi * torch.linalg.inv(cell).T.to(dtype)
 
             # --- 2. 实空间项 (只影响非对角线元素) ---
-            pos_meter = pos * ANGSTROM_TO_METER
-            dij = torch.norm(pos_meter.unsqueeze(1) - pos_meter.unsqueeze(0), dim=2)
-            
-            # 只处理i ≠ j的情况
-            for i in range(num_atoms):
-                for j in range(num_atoms):
-                    if i != j and dij[i, j] > 1e-10 and dij[i, j] < r_cutoff:
-                        dij_safe = dij[i, j] + 1e-10
-                        erfc_term = torch.erfc(alpha * dij_safe) / dij_safe
-                        A[i, j] += erfc_term
+            # 使用边矢量计算距离（考虑周期性）
+            if edge_index is not None and edge_vec is not None:
+                row, col = edge_index
+                dij = torch.norm(edge_vec, dim=1)  # 考虑周期性的距离
+                
+                # 只处理距离在有效范围内的边
+                mask = (dij > 1e-10) & (dij < r_cutoff)
+                dij_safe = dij[mask] + 1e-10
+                erfc_term = torch.erfc(alpha * dij_safe) / dij_safe
+                
+                # 填充到矩阵A（对称矩阵）
+                A[row[mask], col[mask]] = erfc_term
+                A[col[mask], row[mask]] = erfc_term
+            else:
+                # 如果没有提供边信息，使用全连接（效率较低）
+                for i in range(num_atoms):
+                    for j in range(i+1, num_atoms):  # 只计算上三角
+                        # 计算考虑周期性的最小距离
+                        delta = pos[j] - pos[i]
+                        # 将距离映射到[-0.5, 0.5]晶胞范围内
+                        frac_delta = torch.linalg.solve(cell.T, delta)
+                        frac_delta = frac_delta - torch.round(frac_delta)
+                        min_delta = frac_delta @ cell
+                        dij = torch.norm(min_delta)
+                        
+                        if dij > 1e-10 and dij < r_cutoff:
+                            dij_safe = dij + 1e-10
+                            erfc_term = torch.erfc(alpha * dij_safe) / dij_safe
+                            A[i, j] = erfc_term
+                            A[j, i] = erfc_term
 
             # --- 3. 自能项和倒易空间项 (只影响对角线元素) ---
             # 计算倒易空间项的对角线部分
@@ -635,13 +697,8 @@ class QEqModule(nn.Module):
             A.diagonal().copy_(self_energy + reciprocal_diag)
             
             # --- 4. 化学硬度项 (根据文献公式添加到对角线) ---
-            # 根据文献: M_ii = A_ii + J_i
-            # A.diagonal() += eta
             diag = A.diagonal()  # 获取对角线视图
-            # if eta.shape[0] < diag.shape[0]:
-            #     eta = torch.cat([eta, torch.zeros(diag.shape[0] - eta.shape[0], device=device)])
-            diag += eta
-            # diag += eta          # 合法操作（视图支持原位修改）
+            diag += eta  # 添加化学硬度项
 
             # --- 5. 构建增广矩阵 (添加约束) ---
             A_aug = torch.zeros((num_atoms + 1, num_atoms + 1), dtype=dtype, device=device)
@@ -654,7 +711,7 @@ class QEqModule(nn.Module):
 
         N = len(inputs.batch)
         cell = inputs.cell.view(3, 3) 
-        A_aug = build_qeq_matrix_A(eta, pos, cell, 6, 10-5)
+        A_aug = build_qeq_matrix_A(eta, pos, cell, 6, 1.0e-5)
         b_aug = torch.zeros(N + 1, dtype=dtype, device=device)           # [N+1]
         b_aug[:N] = -chi           # [N]
         b_aug[N] = Q_total         # 标量
