@@ -1344,7 +1344,7 @@ class GemNetOC(BaseModel):
         # total_charge = scatter_det(pre_charge, batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules,)
         
         # 计算静电能和力
-        coul_energy, coul_force = self.qeq_module.get_coulomb_energy_ewald(
+        coul_energy = self.qeq_module.get_coulomb_energy_ewald(
             row=main_graph["edge_index"][0], 
             col=main_graph["edge_index"][1], 
             dij_vec=main_graph["vector"], 
@@ -1440,7 +1440,7 @@ class GemNetOC(BaseModel):
                     reduce="add",
                 )  # (nAtoms, num_targets, 3)
             else:
-                F_t = self.force_scaler.calc_forces_and_update(mol_energy, pos)  # 这里需要好好考虑第一项
+                F_t = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, pos)  # 这里需要好好考虑第一项
 
                 w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项
                 # w_short = self.force_scaler.calc_forces_and_update(mol_energy, data.charge)
@@ -1449,7 +1449,7 @@ class GemNetOC(BaseModel):
                 # f_q = self.force_scaler.calc_forces_and_update(outputs["charge_energy"].sum(), pre_charge)
             F_t = F_t.squeeze(1)  # (num_atoms, 3)
 
-            outputs["forces"] = F_t + coul_force
+            outputs["forces"] = F_t
             outputs["w"] = w
             
 
