@@ -1450,7 +1450,7 @@ class GemNetOC(BaseModel):
             F_t = F_t.squeeze(1)  # (num_atoms, 3)
 
             outputs["forces"] = F_t
-            outputs["w"] = 0
+            outputs["w"] = torch.tensor([0.0])
             
 
         return outputs
