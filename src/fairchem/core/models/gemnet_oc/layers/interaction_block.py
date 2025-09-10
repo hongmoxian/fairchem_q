@@ -137,7 +137,7 @@ class InteractionBlock(torch.nn.Module):
 
         if atom_edge_interaction:
             self.atom_edge_interaction = TripletInteraction(
-                emb_size_in=emb_size_atom + 1,
+                emb_size_in=emb_size_atom,
                 emb_size_out=emb_size_edge,
                 emb_size_trip_in=emb_size_trip_in,
                 emb_size_trip_out=emb_size_trip_out,
@@ -165,7 +165,7 @@ class InteractionBlock(torch.nn.Module):
             self.edge_atom_interaction = None
         if atom_interaction:
             self.atom_interaction = PairInteraction(
-                emb_size_atom=emb_size_atom + 1,
+                emb_size_atom=emb_size_atom,
                 emb_size_pair_in=emb_size_a2a_in,
                 emb_size_pair_out=emb_size_a2a_out,
                 emb_size_rbf=emb_size_rbf,
@@ -201,7 +201,7 @@ class InteractionBlock(torch.nn.Module):
         self.atom_emb_layers = torch.nn.ModuleList(
             [
                 ResidualLayer(
-                    emb_size_atom + 1,
+                    emb_size_atom,
                     activation=activation,
                 )
                 for _ in range(num_atom_emb_layers)

@@ -66,7 +66,7 @@ class EdgeEmbedding(torch.nn.Module):
     ) -> None:
         super().__init__()
         in_features = 2 * atom_features + edge_features
-        self.dense = Dense(in_features + 2, out_features, activation=activation, bias=False)
+        self.dense = Dense(in_features, out_features, activation=activation, bias=False)
 
     def forward(
         self,
