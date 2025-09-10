@@ -1286,10 +1286,10 @@ class GemNetOC(BaseModel):
         # subgraph["distance"] = subgraph["distance"][edge_mask]
         # Embedding block
         data.charge.requires_grad_(True)
-        charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
+        # charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         h = self.atom_emb(atomic_numbers)  # 83 * 128
         # (nAtoms, emb_size_atom)
-        h = torch.cat([h, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
+        # h = torch.cat([h, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
         m = self.edge_emb(h, basis_rad_raw, main_graph["edge_index"])  # basis_rad_raw 2维
         # (nEdges, emb_size_edge) 
 
@@ -1442,7 +1442,7 @@ class GemNetOC(BaseModel):
             else:
                 F_t = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, pos)  # 这里需要好好考虑第一项
 
-                w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项
+                # w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项
                 # w_short = self.force_scaler.calc_forces_and_update(mol_energy, data.charge)
                 # w_long = self.force_scaler.calc_forces_and_update(charge_energy, data.charge)
                 # w = w_short + w_long
@@ -1450,7 +1450,7 @@ class GemNetOC(BaseModel):
             F_t = F_t.squeeze(1)  # (num_atoms, 3)
 
             outputs["forces"] = F_t
-            outputs["w"] = w
+            outputs["w"] = 0
             
 
         return outputs

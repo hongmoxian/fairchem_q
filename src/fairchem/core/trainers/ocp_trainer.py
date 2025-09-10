@@ -176,8 +176,8 @@ class OCPTrainer(BaseTrainer):
                         "step": self.step,
                         "w": out['w'].mean().item(),
                         "q": out['charge'][0].item(),
-                        "charge_energy": out['charge_energy'][0].item(),
-                        "lambda_sol": out['lambda_sol'][0].item(),
+                        "charge_energy": out['charge_energy'].item(),
+                        "lambda_sol": out['lambda_sol'].item(),
                     }
                 )
 
@@ -249,7 +249,7 @@ class OCPTrainer(BaseTrainer):
         batch_size = batch.natoms.numel()
         num_atoms_in_batch = batch.natoms.sum()
         for target_key in self.output_targets:
-            if target_key == 'charge_energy' or 'lambda_sol':
+            if target_key == 'charge_energy' or target_key == 'lambda_sol':
                 continue
             ### Target property is a direct output of the model
             if target_key in out:
