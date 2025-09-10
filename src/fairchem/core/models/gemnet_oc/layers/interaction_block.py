@@ -152,7 +152,7 @@ class InteractionBlock(torch.nn.Module):
         if edge_atom_interaction:
             self.edge_atom_interaction = TripletInteraction(
                 emb_size_in=emb_size_edge,
-                emb_size_out=emb_size_atom + 1,
+                emb_size_out=emb_size_atom,
                 emb_size_trip_in=emb_size_trip_in,
                 emb_size_trip_out=emb_size_trip_out,
                 emb_size_rbf=emb_size_rbf,
