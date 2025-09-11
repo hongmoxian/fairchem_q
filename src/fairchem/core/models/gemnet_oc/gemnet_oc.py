@@ -1338,7 +1338,7 @@ class GemNetOC(BaseModel):
         mol_energy = mol_energy.squeeze(-1)  # (nMolecules,)
         
         # 使用模型的x_E来预测电荷
-        chi, eta = self.qeq_module.get_electronegativity(x_E)
+        chi, eta = self.qeq_module._initialize_weights(x_E, data.atomic_numbers)
         pre_charge, lambda_sol = self.qeq_module.solve_qeq_linear_system(chi, eta, data, batch, data.charge, main_graph["edge_index"], main_graph["vector"])
         
         # total_charge = scatter_det(pre_charge, batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules,)
@@ -1441,6 +1441,7 @@ class GemNetOC(BaseModel):
                 )  # (nAtoms, num_targets, 3)
             else:
                 F_t = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, pos)  # 这里需要好好考虑第一项
+                # F_t_e = self.force_scaler.calc_forces_and_update(charge_energy, pos) # 测试使用
 
                 # w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项
                 # w_short = self.force_scaler.calc_forces_and_update(mol_energy, data.charge)

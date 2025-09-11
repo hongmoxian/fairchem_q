@@ -17,23 +17,7 @@ ANGSTROM_TO_METER = 1e-10  # 埃到米的转换因子
 EV_TO_JOULE = 1.602176634e-19  # 电子伏特到焦耳的转换因子
 
 
-name2eta = {
-    "K":3.84,
-    "C":10,
-    "H":12.84,
-    "O":12.16,
-    "Ni":6.48,
-    "N":14.6,
-}
 
-name2chi = {
-    "K":2.42,
-    "C":6.26,
-    "H":7.18,
-    "O":7.54,
-    "Ni":4.4,
-    "N":7.23,
-}
 
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dims, output_dim):
@@ -110,6 +94,24 @@ class QEqModule(nn.Module):
             'Ni': -0.78,
         }
 
+        name2eta = {
+            "K":3.84,
+            "C":10,
+            "H":12.84,
+            "O":12.16,
+            "Ni":6.48,
+            "N":14.6,
+        }
+
+        name2chi = {
+            "K":2.42,
+            "C":6.26,
+            "H":7.18,
+            "O":7.54,
+            "Ni":4.4,
+            "N":7.23,
+        }
+
         self.charge_mlp_initialized = False
         self.electronegativity_mlp = MLP(256, self.electronegativity_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
         self.hardness_mlp = MLP(256, self.hardness_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
@@ -117,57 +119,90 @@ class QEqModule(nn.Module):
         # self.charge_mlp.initialize_weights()
         
         # 添加可训练的电荷偏置参数
-        # self.charge_biases = nn.ParameterDict({
-        #     elem: nn.Parameter(torch.tensor([bias], dtype=torch.float32))
-        #     for elem, bias in self.target_charge_dict.items()
-        # })
-
-    def initialize_charge_mlp(self, node_feat, inputs):
-        """
-        单独的初始化方法，只在训练开始时调用一次
-        """
-        print("Initializing charge MLP with target values...")
-        max_iterations = 20000
-        convergence_threshold = 0.15
-        learning_rate = 0.01
-
-        with torch.no_grad():
-            charge = self.charge_mlp(node_feat).squeeze(-1)
-            # charge = self.charge_ub * torch.tanh(charge / self.charge_ub)
+        self.name2eta = {
+            "K": 3.84,
+            "C": 10.0,
+            "H": 12.84,
+            "O": 12.16,
+            "Ni": 6.48,
+            "N": 14.6,
+        }
+        
+        self.name2chi = {
+            "K": 2.42,
+            "C": 6.26,
+            "H": 7.18,
+            "O": 7.54,
+            "Ni": 4.4,
+            "N": 7.23,
+        }
+        self.initialized = False
+        # if not self.initialized:
             
-            element_indices = {}
-            for idx, elem in enumerate(inputs['atomic_numbers']):
-                elem_symbol = chemical_symbols[int(elem)]
-                if elem_symbol not in element_indices:
-                    element_indices[elem_symbol] = []
-                element_indices[elem_symbol].append(idx)
+        # # 初始化网络参数
+        #     self._initialize_weights()
+    
+    def _initialize_weights(self, node_feat, atomic_numbers):
+        """初始化网络参数，使初始输出 = 元素经验值"""
+        # 初始化最后一层权重为 0
+        # nn.init.zeros_(self.electronegativity_mlp.mlp[-1].weight)
+        # nn.init.zeros_(self.hardness_mlp.mlp[-1].weight)
+        
+        # # 初始化最后一层偏置为 0
+        # nn.init.zeros_(self.electronegativity_mlp.mlp[-1].bias)
+        # nn.init.zeros_(self.hardness_mlp.mlp[-1].bias)
+        
+        # self.initialized = True
 
-            for iteration in range(max_iterations):
-                max_diff = 0.0
-                for elem, indices in element_indices.items():
-                    if elem in self.target_charge_dict:
-                        current_avg = torch.mean(charge[indices])
-                        target_avg = self.target_charge_dict[elem]
-                        diff = target_avg - current_avg
-                        max_diff = max(max_diff, float(abs(diff)))
-                        charge[indices] += learning_rate * diff
+        # def forward(self, node_feat, atomic_numbers):
+        # 预测 delta_chi 和 delta_eta
+        delta_chi = self.electronegativity_mlp(node_feat).squeeze(-1)  # [N]
+        delta_eta = self.hardness_mlp(node_feat).squeeze(-1)           # [N]
+        
+        # 获取基础 chi 和 eta
+        base_chi = torch.zeros_like(atomic_numbers, dtype=torch.float32)
+        base_eta = torch.zeros_like(atomic_numbers, dtype=torch.float32)
+        
+        for i, atomic_num in enumerate(atomic_numbers):
+            symbol = chemical_symbols[int(atomic_num)]
+            if symbol in self.name2chi:
+                base_chi[i] = self.name2chi[symbol]
+            if symbol in self.name2eta:
+                base_eta[i] = self.name2eta[symbol]
+        
+        # 最终输出
+        chi = base_chi + delta_chi
+        eta = base_eta + delta_eta
+        eta = torch.clamp(eta, min=1.0)  # 保证 > 1.0 eV
+        
+        return chi, eta
 
-                # charge = self.charge_ub * torch.tanh(charge / self.charge_ub)
+    
+    # def initialize_charge_mlp(self, node_feat, inputs):
+    #     """安全初始化方法，通过修改网络参数实现"""
+    #     # with torch.no_grad():
+    #         # 1. 构建元素类型到索引的映射
+    #     elem_to_indices = defaultdict(list)
+    #     for idx, atomic_num in enumerate(inputs['atomic_numbers']):
+    #         symbol = chemical_symbols[int(atomic_num)]
+    #         elem_to_indices[symbol].append(idx)
 
-                if max_diff < convergence_threshold:
-                    print(f"Converged after {iteration + 1} iterations")
-                    break
+    #     # 2. 初始化偏置项（推荐方案）
+    #     for elem, indices in elem_to_indices.items():
+    #         if elem in name2chi:
+    #             # 计算当前batch的均值差
+    #             current_chi = self.electronegativity_mlp(node_feat[indices]).mean()
+    #             bias = self.chi_biases[elem] - current_chi
+    #             # 直接修改最后一层偏置参数
+    #             self.electronegativity_mlp.mlp[-1].bias.data[indices] += bias
+
+    #         if elem in name2eta:
+    #             current_eta = self.hardness_mlp(node_feat[indices]).mean()
+    #             bias = self.eta_biases[elem] - current_eta
+    #             self.hardness_mlp.mlp[-1].bias.data[indices] += bias
+
 
             # 更新charge_mlp的最后一层偏置，使其产生所需的初始分布
-            with torch.enable_grad():
-                initial_output = self.charge_mlp(node_feat).squeeze(-1)
-                diff = charge - initial_output
-                last_layer = list(self.charge_mlp.mlp.children())[-1]
-                last_layer.bias.data += diff.mean()
-
-        self.charge_mlp_initialized = True
-
-        print('charge', charge[inputs.batch == 0])
 
     def predict_charge(self, node_feat, inputs):
         """
@@ -428,7 +463,7 @@ class QEqModule(nn.Module):
         # 根据 η² = 1/(2α²) 的关系，将公式中的 η 替换为 α
         # 原公式: exp(-η²|k|²/2) = exp(-(1/(2α²))|k|²/2) = exp(-|k|²/(4α²))
         exp_term = torch.exp(-k_norms_sq / (4 * alpha**2))
-        coeff = (2 * torch.pi / V) * exp_term / k_norms_sq
+        coeff = (2 * torch.pi / V) * exp_term / k_norms_sq * 0.5
         self.reciprocal_space = torch.sum(S_k_sq * coeff)
 
         # 4. 表面校正项 (使用α)
@@ -591,15 +626,11 @@ class QEqModule(nn.Module):
         Args:
             chi (torch.Tensor): [num_atoms] 预测的每个原子的电负性 (描述原子吸引电子的趋势)。
             eta (torch.Tensor): [num_atoms] 预测的每个原子的化学硬度 (描述原子抵抗电荷变化的能力)。
-            pos (torch.Tensor): [num_atoms, 3] 原子的笛卡尔坐标 (单位: Angstrom)。
+            inputs: 包含 pos, cell 等信息
             batch (torch.Tensor): [num_atoms] 每个原子属于哪个分子/体系的索引。
-                                    例如: [0, 0, 0, 1, 1] 表示前3个原子属于体系0，后2个属于体系1。
             Q_total (torch.Tensor): [num_systems] 每个体系的目标总电荷。
             edge_index (torch.Tensor, optional): [2, num_edges] 邻接表，指定哪些原子对之间有相互作用。
-                                                edge_index[0] 是源原子索引，edge_index[1] 是目标原子索引。
-                                                如果为 None，函数会为每个体系内的原子构建全连接图（效率较低）。
-            edge_weight (torch.Tensor, optional): [num_edges] 每条边的权重，通常是库仑核 1/r_ij。
-                                                    如果为 None，函数会根据 pos 和 edge_index 计算。
+            edge_vec (torch.Tensor, optional): [num_edges, 3] 边矢量（考虑周期性）
 
         Returns:
             q_eq (torch.Tensor): [num_atoms] 求解得到的符合约束的原子电荷。
@@ -607,18 +638,14 @@ class QEqModule(nn.Module):
         pos = inputs.pos
         device = pos.device
         dtype = pos.dtype
-        num_atoms = pos.shape[0]                        # 总原子数
-        num_systems = Q_total.shape[0]                  # 总体系数
-        EV_TO_JOULE = 1.602176634e-19                   # eV 到 Joule 的转换因子
-        ANGSTROM_TO_METER = 1e-10                       # Angstrom 到 Meter 的转换因子
-        COULOMB_CONSTANT = 8.9875517923e9              # 库仑常数 (N m^2 C^-2)
+        N = len(batch)
 
         def build_qeq_matrix_A(eta, pos, cell, r_cutoff=6.0, accuracy=1e-5, edge_index=None, edge_vec=None):
             """
             正确构造QEq方程的矩阵A，考虑周期性边界条件
             
             Args:
-                eta (torch.Tensor): [num_atoms] 化学硬度 J_i
+                eta (torch.Tensor): [num_atoms] 化学硬度 η_i
                 pos (torch.Tensor): [num_atoms, 3] 原子坐标
                 cell (torch.Tensor): [3, 3] 晶胞向量
                 r_cutoff, accuracy: Ewald参数
@@ -627,41 +654,35 @@ class QEqModule(nn.Module):
             
             Returns:
                 A_aug (torch.Tensor): [num_atoms + 1, num_atoms + 1] 增广矩阵
+                b_aug (torch.Tensor): [num_atoms + 1] 增广右端项
             """
             
-            device = pos.device
-            dtype = pos.dtype
             num_atoms = pos.shape[0]
             
-            # 初始化矩阵A (不包括约束)
-            A = torch.zeros((num_atoms, num_atoms), dtype=dtype, device=device)
+            # 初始化 Coulomb 矩阵 J (i≠j 项，对角线为0)
+            J = torch.zeros((num_atoms, num_atoms), dtype=dtype, device=device)
 
             # --- 1. 计算Ewald参数 ---
             alpha = torch.sqrt(-torch.log(torch.tensor(accuracy, device=device))) / r_cutoff
             V = torch.abs(torch.det(cell))
             B = 2 * torch.pi * torch.linalg.inv(cell).T.to(dtype)
 
-            # --- 2. 实空间项 (只影响非对角线元素) ---
-            # 使用边矢量计算距离（考虑周期性）
+            # --- 2. 实空间项 (i≠j) ---
             if edge_index is not None and edge_vec is not None:
                 row, col = edge_index
-                dij = torch.norm(edge_vec, dim=1)  # 考虑周期性的距离
-                
-                # 只处理距离在有效范围内的边
+                dij = torch.norm(edge_vec, dim=1)
                 mask = (dij > 1e-10) & (dij < r_cutoff)
                 dij_safe = dij[mask] + 1e-10
                 erfc_term = torch.erfc(alpha * dij_safe) / dij_safe
                 
-                # 填充到矩阵A（对称矩阵）
-                A[row[mask], col[mask]] = erfc_term
-                A[col[mask], row[mask]] = erfc_term
+                # 填充 J 矩阵（对称）
+                J[row[mask], col[mask]] = erfc_term
+                J[col[mask], row[mask]] = erfc_term
             else:
-                # 如果没有提供边信息，使用全连接（效率较低）
+                # 全连接（效率低，仅用于小体系）
                 for i in range(num_atoms):
-                    for j in range(i+1, num_atoms):  # 只计算上三角
-                        # 计算考虑周期性的最小距离
+                    for j in range(i+1, num_atoms):
                         delta = pos[j] - pos[i]
-                        # 将距离映射到[-0.5, 0.5]晶胞范围内
                         frac_delta = torch.linalg.solve(cell.T, delta)
                         frac_delta = frac_delta - torch.round(frac_delta)
                         min_delta = frac_delta @ cell
@@ -670,69 +691,84 @@ class QEqModule(nn.Module):
                         if dij > 1e-10 and dij < r_cutoff:
                             dij_safe = dij + 1e-10
                             erfc_term = torch.erfc(alpha * dij_safe) / dij_safe
-                            A[i, j] = erfc_term
-                            A[j, i] = erfc_term
+                            J[i, j] = erfc_term
+                            J[j, i] = erfc_term
 
-            # --- 3. 自能项和倒易空间项 (只影响对角线元素) ---
-            # 计算倒易空间项的对角线部分
+            # --- 3. 倒易空间项 (i≠j) ---
             kmax = torch.ceil(2 * alpha * torch.sqrt(-torch.log(torch.tensor(accuracy, device=device)))).int()
             k = torch.arange(-kmax, kmax + 1, device=device)
             kx, ky, kz = torch.meshgrid(k, k, k, indexing='ij')
-            k_grid = torch.stack([kx, ky, kz], dim=-1).reshape(-1, 3).to(torch.float32)
-            k_vecs = k_grid @ B.T
+            k_grid = torch.stack([kx, ky, kz], dim=-1).reshape(-1, 3).to(dtype)
+            k_vecs = k_grid @ B.T  # [n_k, 3]
             k_norms = torch.norm(k_vecs, dim=1)
             non_zero_mask = k_norms > 1e-10
             k_vecs = k_vecs[non_zero_mask]
             k_norms = k_norms[non_zero_mask]
+            
+            # 预计算 k·r_ij 用于所有边
+            if edge_index is not None and edge_vec is not None:
+                # [n_k, n_edges]
+                k_dot_r = torch.matmul(k_vecs, edge_vec.T)
+                cos_kr = torch.cos(k_dot_r)  # [n_k, n_edges]
+                # [n_edges]
+                recip_term = (2 * torch.pi / V) * torch.sum(
+                    torch.exp(-k_norms**2 / (4 * alpha**2))[:, None] / k_norms[:, None]**2 * cos_kr,
+                    dim=0
+                )
+                # 加到 J 矩阵
+                J[row, col] += recip_term
+                J[col, row] += recip_term
+            else:
+                # 对每对原子计算
+                for i in range(num_atoms):
+                    for j in range(i+1, num_atoms):
+                        delta = pos[j] - pos[i]
+                        frac_delta = torch.linalg.solve(cell.T, delta)
+                        frac_delta = frac_delta - torch.round(frac_delta)
+                        min_delta = frac_delta @ cell
+                        
+                        # 计算 k·r_ij 对所有 k
+                        k_dot_r_ij = torch.matmul(k_vecs, min_delta)  # [n_k]
+                        cos_kr_ij = torch.cos(k_dot_r_ij)  # [n_k]
+                        recip_term = (2 * torch.pi / V) * torch.sum(
+                            torch.exp(-k_norms**2 / (4 * alpha**2)) / k_norms**2 * cos_kr_ij
+                        )
+                        J[i, j] += recip_term
+                        J[j, i] += recip_term
 
-            coeff = torch.exp(-k_norms**2 / (4 * alpha**2)) / (k_norms**2 * V * torch.pi)
-            
-            # 倒易空间项只影响对角线元素
-            reciprocal_diag = torch.sum(coeff)  # 对所有k点求和
-            
-            # 自能项
-            self_energy = -alpha / torch.sqrt(torch.tensor(torch.pi, dtype=dtype))
-            
-            # 将对角线元素设置为: A_ii = 自能项 + 倒易空间项
-            A.diagonal().copy_(self_energy + reciprocal_diag)
-            
-            # --- 4. 化学硬度项 (根据文献公式添加到对角线) ---
-            diag = A.diagonal()  # 获取对角线视图
-            diag += eta  # 添加化学硬度项
+            # --- 4. 构建总矩阵 A = J + diag(eta) ---
+            A = J + torch.diag(eta)  # 对角线是 eta_i，非对角线是 Coulomb 项
 
-            # --- 5. 构建增广矩阵 (添加约束) ---
+            # --- 5. 构建增广矩阵 ---
             A_aug = torch.zeros((num_atoms + 1, num_atoms + 1), dtype=dtype, device=device)
-            A_aug[:num_atoms, :num_atoms] = A  # 主矩阵部分
-            A_aug[-1, :num_atoms] = 1.0        # 约束行
-            A_aug[:num_atoms, -1] = 1.0        # 约束列
-            A_aug[-1, -1] = 0.0                # 右下角
+            A_aug[:num_atoms, :num_atoms] = A
+            A_aug[-1, :num_atoms] = 1.0   # 约束行
+            A_aug[:num_atoms, -1] = 1.0   # 约束列
+            A_aug[-1, -1] = 0.0           # Lagrange 乘子项
 
             return A_aug
 
-        N = len(inputs.batch)
-        cell = inputs.cell.view(3, 3) 
-        A_aug = build_qeq_matrix_A(eta, pos, cell, 6, 1.0e-5)
-        b_aug = torch.zeros(N + 1, dtype=dtype, device=device)           # [N+1]
-        b_aug[:N] = -chi           # [N]
-        b_aug[N] = Q_total         # 标量
+    # 获取晶胞
+        cell = inputs.cell.view(3, 3)
+        
+        # 构建增广矩阵
+        A_aug = build_qeq_matrix_A(eta, pos, cell, 6.0, 1.0e-5, edge_index, edge_vec)
+        
+        # 构建增广右端项
+        b_aug = torch.zeros(N + 1, dtype=dtype, device=device)
+        b_aug[:N] = -chi           # 电负性项（带负号！）
+        b_aug[N] = Q_total         # 总电荷约束
 
-            # --- e. 求解线性方程组 A_aug * x_aug = b_aug ---
-            #     x_aug = [q0, q1, ..., q(N-1), lambda]
-            #     我们只需要前 N 个解，即原子电荷 q_eq
-        # try:
-            # 使用 LU 分解求解稠密线性系统 (推荐)
-            # torch.linalg.solve 返回 x 使得 Ax = b
-        x_aug_solution = torch.linalg.solve(A_aug, b_aug.unsqueeze(1)) # solve 需要列向量
-        mol_q_eq = x_aug_solution[:N, 0] # 取解向量的前 N 个元素作为电荷 [N]
-        lambda_sol = x_aug_solution[N, 0] # (通常不需要拉格朗日乘子)
-
-        # except torch.linalg.LinAlgError as e:
-        #     # 如果矩阵是奇异的 (不可逆)，则使用伪逆 (SVD) 来求解 (更鲁棒)
-        #     print(f"Warning: Singular matrix for system. Using pseudo-inverse.")
-        #     # 计算 A_aug 的伪逆
-        #     A_pinv = torch.linalg.pinv(A_aug)
-        #     # 用伪逆求解 x_aug = A_pinv * b_aug
-        #     x_aug_solution = A_pinv @ b_aug.unsqueeze(1)
-        #     mol_q_eq = x_aug_solution[:N, 0] # [N]
+        # 求解线性方程组
+        try:
+            x_aug_solution = torch.linalg.solve(A_aug, b_aug.unsqueeze(1))
+            mol_q_eq = x_aug_solution[:N, 0]
+            lambda_sol = x_aug_solution[N, 0]
+        except torch.linalg.LinAlgError:
+            # 如果矩阵奇异，使用伪逆
+            A_pinv = torch.linalg.pinv(A_aug)
+            x_aug_solution = A_pinv @ b_aug.unsqueeze(1)
+            mol_q_eq = x_aug_solution[:N, 0]
+            lambda_sol = x_aug_solution[N, 0]
 
         return mol_q_eq, lambda_sol
