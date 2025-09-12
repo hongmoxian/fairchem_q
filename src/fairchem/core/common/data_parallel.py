@@ -109,10 +109,10 @@ def _ensure_supported(dataset: Any):
     if not isinstance(dataset, Dataset):
         raise UnsupportedDatasetError("BalancedBatchSampler requires a dataset.")
 
-    if not dataset.metadata_hasattr("natoms"):
-        raise UnsupportedDatasetError(
-            "BalancedBatchSampler requires a dataset that has a metadata attributed with number of atoms."
-        )
+    # if not dataset.metadata_hasattr("natoms"):
+    #     raise UnsupportedDatasetError(
+    #         "BalancedBatchSampler requires a dataset that has a metadata attributed with number of atoms."
+    #     )
 
     logging.debug(f"BalancedBatchSampler: Resolved dataset to {type(dataset)}")
     return dataset
