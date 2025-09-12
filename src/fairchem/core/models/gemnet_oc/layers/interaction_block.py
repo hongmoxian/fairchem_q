@@ -266,7 +266,7 @@ class InteractionBlock(torch.nn.Module):
         num_atoms = h.shape[0]
 
         # Initial transformation
-        x_ca_skip = self.dense_ca(m)  # (nEdges, emb_size_edge)
+        x_ca_skip = self.dense_ca(m)  # (nEdges, emb_size_edge * 2)
 
         x_e2e = self.trip_interaction(
             m,

@@ -1228,10 +1228,10 @@ class GemNetOC(nn.Module, GraphModelMixin):
         )
 
         # Embedding block
-        h = self.atom_emb(atomic_numbers)
-        # (nAtoms, emb_size_atom)
+        h = self.atom_emb(atomic_numbers)# (nAtoms, emb_size_atom)
+        
         m = self.edge_emb(h, basis_rad_raw, main_graph["edge_index"])
-        # (nEdges, emb_size_edge)
+        # (nEdges, emb_size_atom * 2)
 
         x_E, x_F = self.out_blocks[0](h, m, basis_output, idx_t)
         # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)

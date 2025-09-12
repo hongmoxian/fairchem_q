@@ -129,7 +129,7 @@ def setup(config) -> None:
             # this is dangerous and should be deprecated, however, FSDP still requires backwards compatibility with
             # initializing this way for now so we need to keep it
             torch.cuda.set_device(config["local_rank"])
-        dist.init_process_group(
+            dist.init_process_group(
             backend=config["distributed_backend"],
             rank=int(os.environ.get("RANK")),
             world_size=config["world_size"],

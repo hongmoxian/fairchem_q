@@ -158,7 +158,7 @@ class OutputBlock(AtomUpdateBlock):
         nAtoms = h.shape[0]
 
         # ------------------------ Atom embeddings ------------------------ #
-        basis_emb_E = self.dense_rbf(basis_rad)  # (nEdges, emb_size_edge)
+        basis_emb_E = self.dense_rbf(basis_rad)  # (nEdges, emb_size_atom * 2)
         x = m * basis_emb_E
 
         x_E = scatter_det(
