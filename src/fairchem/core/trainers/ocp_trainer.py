@@ -181,6 +181,17 @@ class OCPTrainer(BaseTrainer):
                     }
                 )
 
+                # Add dynamic loss weights for common targets if present
+                try:
+                    energy_w = self._get_dynamic_loss_weight("energy", default=None)
+                    forces_w = self._get_dynamic_loss_weight("forces", default=None)
+                    if energy_w is not None:
+                        log_dict.update({"lossw_energy": float(energy_w)})
+                    if forces_w is not None:
+                        log_dict.update({"lossw_forces": float(forces_w)})
+                except Exception:
+                    pass
+
                 log_dict.update(self.loss_dict)
 
                 if (
@@ -342,7 +353,10 @@ class OCPTrainer(BaseTrainer):
             else:
                 target = target.view(batch_size, -1)
 
-            mult = loss_info["coefficient"]
+            # Base static multiplier from config
+            base_mult = loss_info["coefficient"]
+            # Optional dynamic schedule override
+            mult = self._get_dynamic_loss_weight(target_name, default=base_mult)
             self.loss_dict[target_name] = mult \
                 * loss_info["fn"](
                     pred,
@@ -440,6 +454,74 @@ class OCPTrainer(BaseTrainer):
             assert hasattr(lc, "grad_fn")
 
         return sum(loss)
+
+    def _get_dynamic_loss_weight(self, target_name, default=None):
+        """
+        Compute a dynamic loss weight for a given target based on the configured
+        schedule in self.config["optim"]["loss_schedule"]. If no schedule for the
+        target exists, returns `default`.
+
+        Supported schedules (example under optim.loss_schedule):
+          energy: {type: "linear", start: 0.0, end: 1.0, start_step: 0, end_step: 10000}
+          forces: {type: "cosine", start: 1.0, end: 0.2, duration: 50000, start_step: 0}
+          energy: {type: "step", values: [[0, 0.0], [10000, 0.5], [50000, 1.0]]}
+          forces: {type: "exp", start: 1.0, gamma: 0.9995, start_step: 0}
+        """
+        sched_cfg = {}
+        final_config = {}
+        for config in self.config.get("loss_fns", {}):
+            final_config.update(config)
+        sched_cfg = final_config.get(target_name, {})
+        if not sched_cfg:
+            return default
+
+        step = int(getattr(self, "step", 0))
+        sched_type = str(sched_cfg.get("type", "linear")).lower()
+
+        def clip01(x):
+            return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+
+        if sched_type == "linear":
+            start = float(sched_cfg.get("start", default if default is not None else 1.0))
+            end = float(sched_cfg.get("end", start))
+            s0 = int(sched_cfg.get("start_step", 0))
+            s1 = int(sched_cfg.get("end_step", s0))
+            if s1 <= s0:
+                return end
+            t = clip01((step - s0) / float(max(1, s1 - s0)))
+            return (1 - t) * start + t * end
+
+        if sched_type == "cosine":
+            import math
+            start = float(sched_cfg.get("start", default if default is not None else 1.0))
+            end = float(sched_cfg.get("end", start))
+            s0 = int(sched_cfg.get("start_step", 0))
+            dur = int(sched_cfg.get("duration", 1))
+            t = clip01((step - s0) / float(max(1, dur)))
+            return end + 0.5 * (start - end) * (1 + math.cos(math.pi * t))
+
+        if sched_type == "step":
+            # values: list of [at_step, value], sorted by at_step
+            values = sched_cfg.get("values", [])
+            if not values:
+                return default
+            current = float(values[0][1])
+            for at, val in values:
+                if step >= int(at):
+                    current = float(val)
+                else:
+                    break
+            return current
+
+        if sched_type in ("exp", "exponential"):
+            start = float(sched_cfg.get("start", default if default is not None else 1.0))
+            gamma = float(sched_cfg.get("gamma", 1.0))
+            s0 = int(sched_cfg.get("start_step", 0))
+            k = max(0, step - s0)
+            return start * (gamma ** k)
+
+        # Fallback
+        return default
 
     def _compute_metrics(self, out, batch, evaluator, metrics=None):
         if metrics is None:
