@@ -130,11 +130,11 @@ class QEqModule(nn.Module):
         
         self.name2chi = {
             "K": 2.42,
-            "C": 6.26,
-            "H": 7.18,
-            "O": 7.54,
-            "Ni": 4.4,
-            "N": 7.23,
+            "C": 5.34,
+            "H": 4.53,
+            "O": 8.74,
+            "Ni": 4.47,
+            "N": 6.9,
         }
         self.initialized = False
         # if not self.initialized:
@@ -757,7 +757,7 @@ class QEqModule(nn.Module):
         # 构建增广右端项
         b_aug = torch.zeros(N + 1, dtype=dtype, device=device)
         b_aug[:N] = -chi           # 电负性项（带负号！）
-        b_aug[N] = Q_total         # 总电荷约束
+        b_aug[N] = -Q_total         # 总电荷约束(体系电荷为负电荷，加个负号)
 
         # 求解线性方程组
         try:
