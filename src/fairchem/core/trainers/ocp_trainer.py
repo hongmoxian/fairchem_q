@@ -369,7 +369,7 @@ class OCPTrainer(BaseTrainer):
             loss.append(
                 self.loss_dict[target_name]
             )
-        calc_qeq = False
+        calc_qeq = True
         en_dict = {
             'H': 2.20, 'Li': 0.98, 'Be': 1.57, 'B': 2.04, 'C': 2.55, 'N': 3.04,
             'O': 3.44, 'F': 3.98, 'Na': 0.93, 'Mg': 1.31, 'Al': 1.61, 'Si': 1.90,

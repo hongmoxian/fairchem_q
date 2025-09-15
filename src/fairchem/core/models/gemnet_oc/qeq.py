@@ -157,7 +157,7 @@ class QEqModule(nn.Module):
         # def forward(self, node_feat, atomic_numbers):
         # 预测 delta_chi 和 delta_eta
         delta_chi = self.electronegativity_mlp(node_feat).squeeze(-1)  # [N]
-        delta_eta = self.hardness_mlp(node_feat).squeeze(-1)           # [N]
+        # delta_eta = self.hardness_mlp(node_feat).squeeze(-1)           # [N]
         
         # 获取基础 chi 和 eta
         base_chi = torch.zeros_like(atomic_numbers, dtype=torch.float32)
@@ -172,7 +172,7 @@ class QEqModule(nn.Module):
         
         # 最终输出
         chi = base_chi + delta_chi
-        eta = base_eta + delta_eta
+        eta = base_eta
         eta = torch.clamp(eta, min=1.0)  # 保证 > 1.0 eV
         
         return chi, eta
