@@ -1327,9 +1327,9 @@ class GemNetOC(BaseModel):
         # 1. 原子特征
         x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1)) # (nAtoms, emb_size_atom)
         # 2. 将charge扩展到每个原子
-        
+        charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         # 3. 拼接charge到原子特征
-        # x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
+        x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
         # 4. 预测原子能量
         atom_energy = self.out_energy(x_E)  # (nAtoms, 1)
         # 5. 聚合为分子能量
@@ -1450,8 +1450,11 @@ class GemNetOC(BaseModel):
                 # f_q = self.force_scaler.calc_forces_and_update(outputs["charge_energy"].sum(), pre_charge)
             F_t = F_t.squeeze(1)  # (num_atoms, 3)
 
-            outputs["forces"] = F_t
-            outputs["w"] = torch.tensor([0.0])
+        outputs["forces"] = F_t
+        w = self.out_w(x_E_with_charge)
+        w_energy = scatter_det(w, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
+        w_energy = w_energy.squeeze(-1)  # (nMolecules,)
+        outputs["w"] = w_energy
             
 
         return outputs
