@@ -1285,7 +1285,7 @@ class GemNetOC(BaseModel):
         # subgraph["edge_index"] = subgraph["edge_index"][:, edge_mask]
         # subgraph["distance"] = subgraph["distance"][edge_mask]
         # Embedding block
-        data.charge.requires_grad_(True)
+        # data.charge.requires_grad_(True)
         # charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         h = self.atom_emb(atomic_numbers)  # 83 * 128
         # (nAtoms, emb_size_atom)
@@ -1339,8 +1339,11 @@ class GemNetOC(BaseModel):
         
         # 使用模型的x_E来预测电荷
         chi, eta = self.qeq_module._initialize_weights(x_E, data.atomic_numbers)
-        pre_charge, lambda_sol = self.qeq_module.solve_qeq_linear_system(chi, eta, data, batch, data.charge, main_graph["edge_index"], main_graph["vector"])
-        
+        pre_charge, lambda_sol = self.qeq_module.solve_qeq_linear_system(chi, eta, data, batch, -data.charge, main_graph["edge_index"], main_graph["vector"])  # 这里charge 正负号是负的，所以这里要取负
+        # pre_charge = torch.tanh(pre_charge) * self.qeq_module.charge_ub
+        # total = torch.sum(pre_charge)
+        # pre_charge = torch.clamp(pre_charge, min=-self.qeq_module.charge_ub, max=self.qeq_module.charge_ub)
+        # total = torch.sum(pre_charge)
         # total_charge = scatter_det(pre_charge, batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules,)
         
         # 计算静电能和力
@@ -1440,7 +1443,7 @@ class GemNetOC(BaseModel):
                     reduce="add",
                 )  # (nAtoms, num_targets, 3)
             else:
-                F_t = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, pos)  # 这里需要好好考虑第一项
+                F_t = self.force_scaler.calc_forces_and_update(mol_energy + coul_energy, pos)  # 这里需要好好考虑第一项
                 # F_t_e = self.force_scaler.calc_forces_and_update(charge_energy, pos) # 测试使用
 
                 # w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项

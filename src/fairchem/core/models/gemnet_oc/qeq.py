@@ -119,13 +119,21 @@ class QEqModule(nn.Module):
         # self.charge_mlp.initialize_weights()
         
         # 添加可训练的电荷偏置参数
+        # self.name2eta = {
+        #     "K": 3.84,
+        #     "C": 10.0,
+        #     "H": 12.84,
+        #     "O": 12.16,
+        #     "Ni": 6.48,
+        #     "N": 14.6,
+        # }
         self.name2eta = {
-            "K": 3.84,
-            "C": 10.0,
-            "H": 12.84,
-            "O": 12.16,
-            "Ni": 6.48,
-            "N": 14.6,
+            "K":  5,   # 很软，容易失电子
+            "C":  6.5,   # 中等硬度
+            "H":  7.2,   # 略软于C/O，但不应比金属还硬
+            "O":  8.0,   # 较硬
+            "Ni": 7.0,   # 过渡金属，中等偏硬（比K硬得多）
+            "N":  7.5,   # 比C硬，比O略软
         }
         
         self.name2chi = {
@@ -157,7 +165,7 @@ class QEqModule(nn.Module):
         # def forward(self, node_feat, atomic_numbers):
         # 预测 delta_chi 和 delta_eta
         delta_chi = self.electronegativity_mlp(node_feat).squeeze(-1)  # [N]
-        # delta_eta = self.hardness_mlp(node_feat).squeeze(-1)           # [N]
+        delta_eta = self.hardness_mlp(node_feat).squeeze(-1)           # [N]
         
         # 获取基础 chi 和 eta
         base_chi = torch.zeros_like(atomic_numbers, dtype=torch.float32)
@@ -172,7 +180,7 @@ class QEqModule(nn.Module):
         
         # 最终输出
         chi = base_chi + delta_chi
-        eta = base_eta
+        eta = base_eta + delta_eta
         eta = torch.clamp(eta, min=1.0)  # 保证 > 1.0 eV
         
         return chi, eta
@@ -757,7 +765,7 @@ class QEqModule(nn.Module):
         # 构建增广右端项
         b_aug = torch.zeros(N + 1, dtype=dtype, device=device)
         b_aug[:N] = -chi           # 电负性项（带负号！）
-        b_aug[N] = -Q_total         # 总电荷约束(体系电荷为负电荷，加个负号)
+        b_aug[N] = Q_total         # 总电荷约束(体系电荷为负电荷，加个负号)
 
         # 求解线性方程组
         try:
