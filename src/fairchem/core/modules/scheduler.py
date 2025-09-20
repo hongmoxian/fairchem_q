@@ -5,7 +5,7 @@ import inspect
 import torch.optim.lr_scheduler as lr_scheduler
 
 from fairchem.core.common.utils import warmup_lr_lambda
-
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 class LRScheduler:
     """
@@ -45,6 +45,19 @@ class LRScheduler:
                     total_steps = self.config["total_steps"]
                     gamma = self.calculate_gamma(initial_lr, final_lr, total_steps)
                     scheduler_args["gamma"] = gamma
+
+            elif self.scheduler_type == "ReduceLROnPlateau":
+                self.scheduler = ReduceLROnPlateau
+                scheduler_args = self.filter_kwargs(config)
+                if "factor" in self.config:
+                    scheduler_args["factor"] = self.config["factor"]
+                if "patience" in self.config:
+                    scheduler_args["patience"] = self.config["patience"]
+                scheduler_args["verbose"] = True
+                scheduler_args["threshold"] = 1e-2
+                if "min_lr" in self.config:
+                    scheduler_args["min_lr"] = self.config["min_lr"]
+
             else:
                 self.scheduler = getattr(lr_scheduler, self.scheduler_type)
                 scheduler_args = self.filter_kwargs(config)
