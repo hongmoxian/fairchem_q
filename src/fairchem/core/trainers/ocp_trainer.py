@@ -236,7 +236,7 @@ class OCPTrainer(BaseTrainer):
                 if self.scheduler.scheduler_type == "ReduceLROnPlateau":
                     if self.step % eval_every == 0:
                         self.scheduler.step(
-                            metrics=val_metrics[primary_metric]["metric"],
+                            metrics=val_metrics["loss"]["metric"],
                         )
                 else:
                     self.scheduler.step()
@@ -370,6 +370,7 @@ class OCPTrainer(BaseTrainer):
                 self.loss_dict[target_name]
             )
         calc_qeq = True
+        calc_charge = False
         en_dict = {
             'H': 2.20, 'Li': 0.98, 'Be': 1.57, 'B': 2.04, 'C': 2.55, 'N': 3.04,
             'O': 3.44, 'F': 3.98, 'Na': 0.93, 'Mg': 1.31, 'Al': 1.61, 'Si': 1.90,
@@ -450,6 +451,10 @@ class OCPTrainer(BaseTrainer):
             loss.append(loss_w * 100)
             # self.loss_dict['loss_w'] = loss_w * 1000
         # Sanity check to make sure the compute graph is correct.
+        if calc_charge:
+            loss_charge = torch.mean((out['charge'] - torch.tensor(batch.bader[0], device=out['charge'].device, dtype=out['charge'].dtype)**2))  # 这里的bader是个数组
+            self.loss_dict['loss_charge'] = loss_charge * 100
+            loss.append(loss_charge * 100)
         for lc in loss:
             assert hasattr(lc, "grad_fn")
 
