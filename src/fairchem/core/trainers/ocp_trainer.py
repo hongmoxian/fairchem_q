@@ -446,9 +446,9 @@ class OCPTrainer(BaseTrainer):
         #     # loss.append()
         #     # self.loss_dict['en_loss'] = electronegativity_rank_loss(out['charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
             loss_w = torch.mean(torch.abs(out['w'] - 4.44 - batch.mu ))
-            self.loss_dict['loss_w'] = loss_w * 100
+            self.loss_dict['loss_w'] = loss_w * 1
         #     loss.append(loss_w)
-            loss.append(loss_w * 100)
+            loss.append(loss_w * 1)
             # self.loss_dict['loss_w'] = loss_w * 1000
         # Sanity check to make sure the compute graph is correct.
         if calc_charge:
