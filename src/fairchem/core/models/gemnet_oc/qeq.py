@@ -119,22 +119,22 @@ class QEqModule(nn.Module):
         # self.charge_mlp.initialize_weights()
         
         # 添加可训练的电荷偏置参数
-        # self.name2eta = {
-        #     "K": 3.84,
-        #     "C": 10.0,
-        #     "H": 12.84,
-        #     "O": 12.16,
-        #     "Ni": 6.48,
-        #     "N": 14.6,
-        # }
         self.name2eta = {
-            "K":  5,   # 很软，容易失电子
-            "C":  6.5,   # 中等硬度
-            "H":  7.2,   # 略软于C/O，但不应比金属还硬
-            "O":  8.0,   # 较硬
-            "Ni": 7.0,   # 过渡金属，中等偏硬（比K硬得多）
-            "N":  7.5,   # 比C硬，比O略软
+            "K": 3.84,
+            "C": 10.0,
+            "H": 12.84,
+            "O": 12.16,
+            "Ni": 6.48,
+            "N": 14.6,
         }
+        # self.name2eta = {
+        #     "K":  5,   # 很软，容易失电子
+        #     "C":  6.5,   # 中等硬度
+        #     "H":  7.2,   # 略软于C/O，但不应比金属还硬
+        #     "O":  8.0,   # 较硬
+        #     "Ni": 7.0,   # 过渡金属，中等偏硬（比K硬得多）
+        #     "N":  7.5,   # 比C硬，比O略软
+        # }
         
         self.name2chi = {
             "K": 2.42,
@@ -164,8 +164,8 @@ class QEqModule(nn.Module):
 
         # def forward(self, node_feat, atomic_numbers):
         # 预测 delta_chi 和 delta_eta
-        delta_chi = self.electronegativity_mlp(node_feat).squeeze(-1)  # [N]
-        delta_eta = self.hardness_mlp(node_feat).squeeze(-1)           # [N]
+        delta_chi = 0.5*torch.tanh(self.electronegativity_mlp(node_feat)).squeeze(-1)  # [N]
+        # delta_eta = 2*torch.tanh(self.hardness_mlp(node_feat)).squeeze(-1)           # [N]
         
         # 获取基础 chi 和 eta
         base_chi = torch.zeros_like(atomic_numbers, dtype=torch.float32)
@@ -180,7 +180,7 @@ class QEqModule(nn.Module):
         
         # 最终输出
         chi = base_chi + delta_chi
-        eta = base_eta + delta_eta
+        eta = base_eta 
         eta = torch.clamp(eta, min=1.0)  # 保证 > 1.0 eV
         
         return chi, eta
@@ -418,8 +418,8 @@ class QEqModule(nn.Module):
         cell = inputs.cell.view(3, 3)
         V = torch.abs(torch.det(cell))  # 体积 (Å³)
         
-        # 计算倒易基矢 (1/Å)，注意这里不需要2π因子
-        B = torch.linalg.inv(cell).T
+        # 计算倒易基矢 (1/Å)，注意这里需要2π因子
+        B = 2 * torch.pi * torch.linalg.inv(cell).T
 
         # 1. 实空间项 (只考虑在截断半径内的原子对)
         mask = (dij_ang > 1e-11) & (dij_ang < r_cutoff_ang)
@@ -471,7 +471,7 @@ class QEqModule(nn.Module):
         # 根据 η² = 1/(2α²) 的关系，将公式中的 η 替换为 α
         # 原公式: exp(-η²|k|²/2) = exp(-(1/(2α²))|k|²/2) = exp(-|k|²/(4α²))
         exp_term = torch.exp(-k_norms_sq / (4 * alpha**2))
-        coeff = (2 * torch.pi / V) * exp_term / k_norms_sq * 0.5
+        coeff = (2 * torch.pi / V) * exp_term / k_norms_sq
         self.reciprocal_space = torch.sum(S_k_sq * coeff)
 
         # 4. 表面校正项 (使用α)

@@ -1363,7 +1363,7 @@ class GemNetOC(BaseModel):
             pred_charge=pre_charge, 
             inputs=data, 
             nmols=nMolecules
-        )
+        )   # 总能里面不要这一项
         
         # 合并所有能量项
         charge_energy = coul_energy + electronegativity_energy
@@ -1443,7 +1443,15 @@ class GemNetOC(BaseModel):
                     reduce="add",
                 )  # (nAtoms, num_targets, 3)
             else:
-                F_t = self.force_scaler.calc_forces_and_update(mol_energy + coul_energy, pos)  # 这里需要好好考虑第一项
+                F_t = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, pos)  # 这里需要好好考虑第一项
+                # F_1 = self.force_scaler.calc_forces_and_update(mol_energy, pos)
+                # F_2 = self.force_scaler.calc_forces_and_update(charge_energy, pos)
+                # F_3 = self.force_scaler.calc_forces_and_update(electronegativity_energy, pos)
+                # F_4 = self.force_scaler.calc_forces_and_update(coul_energy, pos)
+                # F1 = self.force_scaler.calc_forces_and_update(real_space, pos)
+                # F2 = self.force_scaler.calc_forces_and_update(reciprocal_space, pos)
+                # F3 = self.force_scaler.calc_forces_and_update(self_energy, pos)
+                # F_t = self.force_scaler.calc_forces_and_update(corr_energy, pos)
                 # F_t_e = self.force_scaler.calc_forces_and_update(charge_energy, pos) # 测试使用
 
                 # w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项
