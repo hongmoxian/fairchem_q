@@ -172,7 +172,7 @@ class AtomsToGraphs:
         tags = torch.Tensor(atoms.get_tags())
         charge = torch.Tensor(atoms.info.get("charge", 0))
 
-        print('charge', charge)
+        # print('charge', charge)
 
         # put the minimum data in torch geometric data object
         data = Data(

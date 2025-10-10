@@ -1339,13 +1339,18 @@ class GemNetOC(BaseModel):
         
         # 使用模型的x_E来预测电荷
         chi, eta = self.qeq_module._initialize_weights(x_E, data.atomic_numbers)
+        # initial_charge = self.qeq_module.predict_charge(data)
+
+        # pre_charge, lambda_sol = self.qeq_module.solve_qeq(initial_charge=initial_charge, chi=chi, J=eta, inputs=data, dij_vec=main_graph["vector"], row=main_graph["edge_index"][0], col=main_graph["edge_index"][1], Q_total=-data.charge, max_iter=1000)
         pre_charge, lambda_sol = self.qeq_module.solve_qeq_linear_system(chi, eta, data, batch, -data.charge, main_graph["edge_index"], main_graph["vector"])  # 这里charge 正负号是负的，所以这里要取负
+
+        
         # pre_charge = torch.tanh(pre_charge) * self.qeq_module.charge_ub
         # total = torch.sum(pre_charge)
         # pre_charge = torch.clamp(pre_charge, min=-self.qeq_module.charge_ub, max=self.qeq_module.charge_ub)
         # total = torch.sum(pre_charge)
         # total_charge = scatter_det(pre_charge, batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules,)
-        
+        # pre_charge = self.qeq_module.predict_charge(inputs=data)
         # 计算静电能和力
         coul_energy = self.qeq_module.get_coulomb_energy_ewald(
             row=main_graph["edge_index"][0], 
@@ -1462,10 +1467,10 @@ class GemNetOC(BaseModel):
             F_t = F_t.squeeze(1)  # (num_atoms, 3)
 
         outputs["forces"] = F_t
-        w = self.out_w(x_E_with_charge)
-        w_energy = scatter_det(w, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
-        w_energy = w_energy.squeeze(-1)  # (nMolecules,)
-        outputs["w"] = w_energy
+        # w = self.out_w(x_E_with_charge)
+        # w_energy = scatter_det(w, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
+        # w_energy = w_energy.squeeze(-1)  # (nMolecules,)
+        outputs["w"] = -lambda_sol -4.44
             
 
         return outputs
