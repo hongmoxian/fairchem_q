@@ -175,7 +175,9 @@ class OCPTrainer(BaseTrainer):
                         "epoch": self.epoch,
                         "step": self.step,
                         "w": out['w'].mean().item(),
-                        "q": out['charge'][0].item(),
+                        "q1": out['charge'][0].item(),
+                        "q2": out['charge'][1].item(),
+                        "q3": out['charge'][2].item(),
                         "charge_energy": out['charge_energy'].item(),
                         "lambda_sol": out['lambda_sol'].item(),
                     }
@@ -446,13 +448,13 @@ class OCPTrainer(BaseTrainer):
         #     # loss.append()
         #     # self.loss_dict['en_loss'] = electronegativity_rank_loss(out['charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
             loss_w = torch.mean(torch.abs(out['w'] - 4.44 - batch.mu ))
-            self.loss_dict['loss_w'] = loss_w * 1
+            self.loss_dict['loss_w'] = loss_w * 10
         #     loss.append(loss_w)
-            loss.append(loss_w * 1)
+            loss.append(loss_w * 10)
             # self.loss_dict['loss_w'] = loss_w * 1000
         # Sanity check to make sure the compute graph is correct.
         if calc_charge:
-            loss_charge = torch.mean((out['charge'] - torch.tensor(batch.bader[0], device=out['charge'].device, dtype=out['charge'].dtype)**2))  # 这里的bader是个数组
+            loss_charge = torch.mean(torch.abs(out['charge'] - torch.tensor(batch.bader[0], device=out['charge'].device, dtype=out['charge'].dtype)))  # 这里的bader是个数组
             self.loss_dict['loss_charge'] = loss_charge * 100
             loss.append(loss_charge * 100)
         for lc in loss:
