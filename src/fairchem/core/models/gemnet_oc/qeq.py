@@ -517,7 +517,7 @@ class QEqModule(nn.Module):
 
         # 能量
         exp_term = torch.exp(-k_norms_sq / (4 * alpha**2))
-        coeff = (2 * torch.pi / ab) * exp_term / k_norms
+        coeff = (2 * torch.pi / ab) * exp_term / k_norms_sq
         reciprocal_space = torch.sum(S_k_sq * coeff)
 
         # 4. 表面校正项 (使用α)
@@ -546,6 +546,7 @@ class QEqModule(nn.Module):
             
             # 提取z坐标（假设z方向是非周期方向）
             z = positions[:, 2]  # [N]
+            z = z - L_z / 2
             
             # 计算各项
             M_z = torch.sum(q * z)                    # 偶极矩 M_z = Σ q_i z_i
@@ -825,7 +826,7 @@ class QEqModule(nn.Module):
                 k_dot_r = torch.matmul(k_vecs, pos.T)  # [n_k, n_atoms]
 
                 # 权重因子: exp(-|G|^2 / (4α²)) / |G|^2
-                exp_factor = torch.exp(-k_norms_sq / (4 * alpha**2)) / k_norms  # [n_k]
+                exp_factor = torch.exp(-k_norms_sq / (4 * alpha**2)) / k_norms_sq  # [n_k]
 
                 # cos(G·r_i) 和 sin(G·r_i)
                 cos_kr = torch.cos(k_dot_r)  # [n_k, n_atoms]
