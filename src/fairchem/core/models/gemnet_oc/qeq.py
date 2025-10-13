@@ -201,7 +201,7 @@ class QEqModule(nn.Module):
 
         # def forward(self, node_feat, atomic_numbers):
         # 预测 delta_chi 和 delta_eta
-        delta_chi = self.electronegativity_mlp(node_feat).squeeze(-1)  # [N]
+        delta_chi = 0.5* torch.tanh(self.electronegativity_mlp(node_feat).squeeze(-1))  # [N]
         # delta_eta = 0.8*torch.tanh(self.hardness_mlp(node_feat).squeeze(-1))           # [N]
         
         # 获取基础 chi 和 eta
@@ -466,7 +466,8 @@ class QEqModule(nn.Module):
         # 晶胞处理 (单位: Å)
         cell = inputs.cell.view(3, 3)
         V = torch.abs(torch.det(cell))  # 体积 (Å³)
-        
+        c_vec_norm = torch.norm(cell[:, 2])
+        ab = V / c_vec_norm
         # 计算倒易基矢 (1/Å)，注意这里需要2π因子
         B = 2 * torch.pi * torch.linalg.inv(cell).T
 
@@ -516,7 +517,7 @@ class QEqModule(nn.Module):
 
         # 能量
         exp_term = torch.exp(-k_norms_sq / (4 * alpha**2))
-        coeff = (2 * torch.pi / V) * exp_term / k_norms_sq
+        coeff = (2 * torch.pi / ab) * exp_term / k_norms
         reciprocal_space = torch.sum(S_k_sq * coeff)
 
         # 4. 表面校正项 (使用α)
@@ -541,6 +542,7 @@ class QEqModule(nn.Module):
             # 计算晶胞参数
             V = torch.abs(torch.det(cell))  # 体积（Å³）
             L_z = torch.norm(cell.view(3, 3)[:, 2])       # z方向晶胞长度（Å）
+            ab = V / L_z
             
             # 提取z坐标（假设z方向是非周期方向）
             z = positions[:, 2]  # [N]
@@ -559,7 +561,7 @@ class QEqModule(nn.Module):
             term3 = Q_total**2 * L_z**2 / 12          # Q_tot² L_z² / 12
             
             # 完整偶极修正
-            E_dipole = (2 * torch.pi / V) * (term1 - term2 - term3)
+            E_dipole = (2 * torch.pi / ab) * (term1 - term3)
             
             # 单位转换
             # E_dipole *= EV_ANGSTROM
@@ -760,6 +762,8 @@ class QEqModule(nn.Module):
             alpha = torch.sqrt(-torch.log(torch.tensor(accuracy, device=device))) / r_cutoff
             V = torch.abs(torch.det(cell))
             B = 2 * torch.pi * torch.linalg.inv(cell).T.to(dtype)
+            c_vec_norm = torch.norm(cell[:, 2])
+            ab = V / c_vec_norm
 
             # --- 2. 实空间项 ---
             if edge_index is not None and edge_vec is not None:
@@ -807,9 +811,11 @@ class QEqModule(nn.Module):
 
             # 计算 |G|^2
             k_norms_sq = torch.sum(k_vecs**2, dim=1)  # [n_k]
+            k_norms = torch.norm(k_vecs, dim=1)
             non_zero_mask = k_norms_sq > 1e-10
             k_vecs = k_vecs[non_zero_mask]
             k_norms_sq = k_norms_sq[non_zero_mask]
+            k_norms = k_norms[non_zero_mask]
 
             if k_vecs.shape[0] == 0:
                 # 没有非零倒格矢，跳过倒易空间
@@ -819,7 +825,7 @@ class QEqModule(nn.Module):
                 k_dot_r = torch.matmul(k_vecs, pos.T)  # [n_k, n_atoms]
 
                 # 权重因子: exp(-|G|^2 / (4α²)) / |G|^2
-                exp_factor = torch.exp(-k_norms_sq / (4 * alpha**2)) / k_norms_sq  # [n_k]
+                exp_factor = torch.exp(-k_norms_sq / (4 * alpha**2)) / k_norms  # [n_k]
 
                 # cos(G·r_i) 和 sin(G·r_i)
                 cos_kr = torch.cos(k_dot_r)  # [n_k, n_atoms]
@@ -835,7 +841,7 @@ class QEqModule(nn.Module):
                 # 加权求和 over G
                 weighted_sum = (exp_factor.unsqueeze(1).unsqueeze(2) * cos_diff).sum(dim=0)  # [N, N]
 
-                recip_contribution = (4 * torch.pi / V) * weighted_sum
+                recip_contribution = (4 * torch.pi / ab) * weighted_sum
 
             # 添加到 Coulomb 矩阵 J
             J += recip_contribution
