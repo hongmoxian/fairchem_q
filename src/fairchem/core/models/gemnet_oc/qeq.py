@@ -123,11 +123,11 @@ class QEqModule(nn.Module):
         # 添加可训练的电荷偏置参数
         self.name2eta = {
             "K":3.84,
-            "C":10,
-            "H":12.84,
-            "O":12.16,
-            "Ni":6.48,
-            "N":14.6,
+            "C":10.13,
+            "H":13.84,
+            "O":13.36,
+            "Ni":8.41,
+            "N":11.76,
         }
         # self.name2eta = {
         #     "K": nn.Parameter(torch.tensor(self.name2eta_["K"])),
@@ -148,11 +148,11 @@ class QEqModule(nn.Module):
         
         self.name2chi = {
              "K":2.42,
-            "C":6.26,
-            "H":7.18,
-            "O":7.54,
-            "Ni":4.4,
-            "N":7.23,
+            "C":5.34,
+            "H":4.53,
+            "O":8.74,
+            "Ni":4.47,
+            "N":6.9,
         }
 
         # self.name2chi = {
@@ -201,7 +201,7 @@ class QEqModule(nn.Module):
 
         # def forward(self, node_feat, atomic_numbers):
         # 预测 delta_chi 和 delta_eta
-        delta_chi = 0.5* torch.tanh(self.electronegativity_mlp(node_feat).squeeze(-1))  # [N]
+        delta_chi = 2* torch.tanh(self.electronegativity_mlp(node_feat).squeeze(-1))  # [N]
         # delta_eta = 0.8*torch.tanh(self.hardness_mlp(node_feat).squeeze(-1))           # [N]
         
         # 获取基础 chi 和 eta
@@ -444,63 +444,67 @@ class QEqModule(nn.Module):
         reciprocal_space = 0.0
         self_energy = 0.0
         corr_energy = 0.0
-        if not if_grad:
-            pos = inputs.pos.detach()
-            dij_vec = dij_vec.detach()
-        else:
-            pos = inputs.pos
+        # if not if_grad:
+        #     pos = inputs.pos.detach()
+        #     dij_vec = dij_vec.detach()
+        # else:
+        pos = inputs.pos
 
-        # 单位转换常数 (使用Å单位)
+        # # 单位转换常数 (使用Å单位)
         EV_ANGSTROM = 14.399645  # 转换因子: (e²/(4πε₀)) in eV·Å
 
-        # 直接使用Å单位
+        # # 直接使用Å单位
         r_cutoff_ang = r_cutoff
         device = dij_vec.device
 
-        # 计算距离 (从矢量计算)
-        dij_ang = torch.norm(dij_vec, dim=1)  # [num_edges]
+        # # 计算距离 (从矢量计算)
+        # dij_ang = torch.norm(dij_vec, dim=1)  # [num_edges]
 
-        # 计算α参数 (单位: 1/Å)
+        # # 计算α参数 (单位: 1/Å)
         alpha = torch.sqrt(-torch.log(torch.tensor(accuracy))) / r_cutoff_ang
 
-        # 晶胞处理 (单位: Å)
+        # # 晶胞处理 (单位: Å)
         cell = inputs.cell.view(3, 3)
         V = torch.abs(torch.det(cell))  # 体积 (Å³)
-        c_vec_norm = torch.norm(cell[:, 2])
-        ab = V / c_vec_norm
-        # 计算倒易基矢 (1/Å)，注意这里需要2π因子
+        # # c_vec_norm = torch.norm(cell[:, 2])
+        # # ab = V / c_vec_norm
+        # # 计算倒易基矢 (1/Å)，注意这里需要2π因子
         B = 2 * torch.pi * torch.linalg.inv(cell).T
 
-        # 1. 实空间项 (只考虑在截断半径内的原子对)
-        mask = (dij_ang > 1e-11) & (dij_ang < r_cutoff_ang)
-        dij_safe = dij_ang[mask] + 1e-11
-        erfc_term = torch.erfc(alpha * dij_safe) / dij_safe  # 使用α
+        # # 1. 实空间项 (只考虑在截断半径内的原子对)
+        # mask = (dij_ang > 1e-11) & (dij_ang < r_cutoff_ang)
+        # dij_safe = dij_ang[mask] + 1e-11
+        # erfc_term = torch.erfc(alpha * dij_safe) / dij_safe  # 使用α
         
-        # 只计算符合条件的原子对
-        row_masked = row[mask]
-        col_masked = col[mask]
-        real_space = 0.5 * torch.sum(
-            pred_charge[row_masked] * pred_charge[col_masked] * erfc_term
-        )
+        # # 只计算符合条件的原子对
+        # row_masked = row[mask]
+        # col_masked = col[mask]
+        # real_space = 0.5 * torch.sum(
+        #     pred_charge[row_masked] * pred_charge[col_masked] * erfc_term
+        # )
 
-        # 2. 自能项 (使用α)
-        self_energy = - (alpha / torch.sqrt(torch.tensor(torch.pi).to(torch.float32))) * torch.sum(pred_charge**2)
+        # # 2. 自能项 (使用α)
+        # self_energy = - (alpha / torch.sqrt(torch.tensor(torch.pi).to(torch.float32))) * torch.sum(pred_charge**2)
 
         # 3. 倒易空间项 (使用α参数和K²计算，避免复数运算)
         # 计算k网格
         # kmax = torch.ceil(2 * alpha * torch.sqrt(-torch.log(torch.tensor(accuracy)))).int()
 # --- 倒易空间项 (slab: 2D periodic in xy) ---
         kmax = torch.ceil(2 * alpha * torch.sqrt(-torch.log(torch.tensor(accuracy, device=device)))).int()
-        h = torch.arange(-kmax, kmax + 1, device=device)
-        k_vals = torch.arange(-kmax, kmax + 1, device=device)
-        h_grid, k_grid = torch.meshgrid(h, k_vals, indexing='ij')
+        h_vals = torch.arange(-kmax, kmax+1, device=device)
+        k_vals = torch.arange(-kmax, kmax+1, device=device)
+        h_grid, k_grid = torch.meshgrid(h_vals, k_vals, indexing='ij')
+        l_grid = torch.zeros_like(h_grid)  # 固定 l=0
+
 
         # 倒易基矢 (b1, b2 from B = 2π * inv(cell).T)
         b1 = B[:, 0]  # [3]
         b2 = B[:, 1]  # [3]
-        
+        b3 = B[:, 2]  # [3] <-- 使用完整的3D倒格矢
         # k = h*b1 + k*b2
-        k_vecs = (h_grid.unsqueeze(-1) * b1 + k_grid.unsqueeze(-1) * b2).reshape(-1, 3)
+        k_vecs = (h_grid.unsqueeze(-1) * b1 + 
+              k_grid.unsqueeze(-1) * b2 +
+              l_grid.unsqueeze(-1) * b3).reshape(-1, 3) # [n_k, 3]
         k_norms = torch.norm(k_vecs, dim=1)
         non_zero_mask = k_norms > 1e-11
         k_vecs = k_vecs[non_zero_mask]
@@ -517,7 +521,7 @@ class QEqModule(nn.Module):
 
         # 能量
         exp_term = torch.exp(-k_norms_sq / (4 * alpha**2))
-        coeff = (2 * torch.pi / ab) * exp_term / k_norms_sq
+        coeff = (2 * torch.pi / V) * exp_term / k_norms_sq
         reciprocal_space = torch.sum(S_k_sq * coeff)
 
         # 4. 表面校正项 (使用α)
@@ -562,7 +566,7 @@ class QEqModule(nn.Module):
             term3 = Q_total**2 * L_z**2 / 12          # Q_tot² L_z² / 12
             
             # 完整偶极修正
-            E_dipole = (2 * torch.pi / ab) * (term1 - term3)
+            E_dipole = (2 * torch.pi / ab) * (term1 - term2 - term3)
             
             # 单位转换
             # E_dipole *= EV_ANGSTROM
@@ -763,8 +767,8 @@ class QEqModule(nn.Module):
             alpha = torch.sqrt(-torch.log(torch.tensor(accuracy, device=device))) / r_cutoff
             V = torch.abs(torch.det(cell))
             B = 2 * torch.pi * torch.linalg.inv(cell).T.to(dtype)
-            c_vec_norm = torch.norm(cell[:, 2])
-            ab = V / c_vec_norm
+            # c_vec_norm = torch.norm(cell[:, 2])
+            # ab = V / c_vec_norm
 
             # --- 2. 实空间项 ---
             if edge_index is not None and edge_vec is not None:
@@ -792,23 +796,21 @@ class QEqModule(nn.Module):
                             J[j, i] = erfc_term
 
             # --- 3. 倒易空间项 ---
-                        # --- 3. 倒易空间项（slab 结构：仅 h, k，l=0）---
             kmax = torch.ceil(2 * alpha * torch.sqrt(-torch.log(torch.tensor(accuracy, device=device)))).int()
 
-            # 获取前两个倒格矢（对应周期方向）
             b1 = B[:, 0]  # shape [3]
             b2 = B[:, 1]  # shape [3]
+            b3 = B[:, 2]
 
-            # 生成 2D k 网格：h, k ∈ [-kmax, kmax]
-            h = torch.arange(-kmax, kmax + 1, device=device)
+            h_vals = torch.arange(-kmax, kmax + 1, device=device)
             k_vals = torch.arange(-kmax, kmax + 1, device=device)
-            h_grid, k_grid = torch.meshgrid(h, k_vals, indexing='ij')  # [2kmax+1, 2kmax+1]
+            # l_vals = torch.arange(-kmax, kmax + 1, device=device)
+            h_grid, k_grid = torch.meshgrid(h_vals, k_vals, indexing='ij')
+            l_grid = torch.zeros_like(h_grid)  # 固定 l=0
 
-            # 构造 G = h*b1 + k*b2，shape: [n_k, 3]
-            k_vecs = (
-                h_grid.unsqueeze(-1) * b1 + 
-                k_grid.unsqueeze(-1) * b2
-            ).reshape(-1, 3)
+            k_vecs = (h_grid.unsqueeze(-1) * b1 + 
+              k_grid.unsqueeze(-1) * b2 +
+              l_grid.unsqueeze(-1) * b3).reshape(-1, 3) # [n_k, 3]
 
             # 计算 |G|^2
             k_norms_sq = torch.sum(k_vecs**2, dim=1)  # [n_k]
@@ -842,7 +844,7 @@ class QEqModule(nn.Module):
                 # 加权求和 over G
                 weighted_sum = (exp_factor.unsqueeze(1).unsqueeze(2) * cos_diff).sum(dim=0)  # [N, N]
 
-                recip_contribution = (4 * torch.pi / ab) * weighted_sum
+                recip_contribution = (4 * torch.pi / V) * weighted_sum
 
             # 添加到 Coulomb 矩阵 J
             J += recip_contribution
@@ -897,6 +899,185 @@ class QEqModule(nn.Module):
     #     E = self.get_coulomb_energy_ewald(row, col, dij_vec, pred_charge, inputs=None, r_cutoff=6.0, accuracy=1e-5) + self.get_electronegativity_energy(chi, J, pred_charge, inputs=inputs, nmols=inputs.batch.max() + 1)
     #     gradients = grad(E, pred_charge, create_graph=True)[0]
     #     return gradients
+    # def solve_qeq_linear_system(self, chi, eta, inputs, batch, Q_total, edge_index=None, edge_vec=None):
+    #     """
+    #     使用矩阵求逆法求解 QEq 方程，结合 C++ 代码逻辑构建矩阵
+        
+    #     Args:
+    #         chi (torch.Tensor): [num_atoms] 预测的每个原子的电负性
+    #         eta (torch.Tensor): [num_atoms] 预测的每个原子的化学硬度
+    #         inputs: 包含 pos, cell 等信息
+    #         batch (torch.Tensor): [num_atoms] 每个原子属于哪个分子/体系的索引
+    #         Q_total (torch.Tensor): [num_systems] 每个体系的目标总电荷
+    #         edge_index (torch.Tensor, optional): [2, num_edges] 邻接表
+    #         edge_vec (torch.Tensor, optional): [num_edges, 3] 边矢量（考虑周期性）
+            
+    #     Returns:
+    #         q_eq (torch.Tensor): [num_atoms] 求解得到的符合约束的原子电荷
+    #         lambda_sol (torch.Tensor): 拉格朗日乘子
+    #     """
+    #     pos = inputs.pos
+    #     device = pos.device
+    #     dtype = pos.dtype
+    #     N = len(batch)
+    #     lambda_val = 1.2  # C++ 中的默认值
+    #     k_const = 14.4    # 物理常数 k = 14.4 eV·Å (1/(4πε0))
+        
+    #     def build_qeq_matrix_A(eta, pos, cell, r_cutoff=6.0, accuracy=1e-5, 
+    #                         edge_index=None, edge_vec=None):
+    #         num_atoms = pos.shape[0]
+    #         device = pos.device
+    #         dtype = pos.dtype
+            
+    #         # 初始化 Coulomb 矩阵
+    #         J = torch.zeros((num_atoms, num_atoms), dtype=dtype, device=device)
+            
+    #         # --- 1. 计算Ewald参数 ---
+    #         alpha = torch.sqrt(-torch.log(torch.tensor(accuracy, device=device))) / r_cutoff
+    #         V = torch.abs(torch.det(cell))
+    #         B = 2 * torch.pi * torch.linalg.inv(cell).T.to(dtype)
+            
+    #         # --- 2. 实空间项 ---
+    #         if edge_index is not None and edge_vec is not None:
+    #             row, col = edge_index
+    #             dij = torch.norm(edge_vec, dim=1)
+    #             mask = (dij > 1e-10) & (dij < r_cutoff)
+    #             dij_safe = dij[mask] + 1e-10
+                
+    #             # 添加轨道重叠项
+    #             Jij = torch.sqrt(eta[row[mask]] * eta[col[mask]])
+    #             a = Jij / k_const
+    #             orbital_term = torch.exp(-(a**2 * dij_safe**2)) * (2*a - a**2*dij_safe - 1/dij_safe)
+                
+    #             erfc_term = torch.erfc(alpha * dij_safe) / dij_safe + orbital_term
+                
+    #             J[row[mask], col[mask]] = lambda_val * (k_const/2) * erfc_term
+    #             J[col[mask], row[mask]] = lambda_val * (k_const/2) * erfc_term
+    #         else:
+    #             for i in range(num_atoms):
+    #                 for j in range(i+1, num_atoms):
+    #                     delta = pos[j] - pos[i]
+    #                     frac_delta = torch.linalg.solve(cell.T, delta)
+    #                     frac_delta = frac_delta - torch.round(frac_delta)
+    #                     min_delta = frac_delta @ cell
+    #                     dij = torch.norm(min_delta)
+                        
+    #                     if dij > 1e-10 and dij < r_cutoff:
+    #                         dij_safe = dij + 1e-10
+                            
+    #                         # 添加轨道重叠项
+    #                         Jij = torch.sqrt(eta[i] * eta[j])
+    #                         a = Jij / k_const
+    #                         orbital_term = torch.exp(-(a**2 * dij_safe**2)) * (2*a - a**2*dij_safe - 1/dij_safe)
+                            
+    #                         erfc_term = torch.erfc(alpha * dij_safe) / dij_safe + orbital_term
+                            
+    #                         J[i, j] = lambda_val * (k_const/2) * erfc_term
+    #                         J[j, i] = lambda_val * (k_const/2) * erfc_term
+            
+    #         # --- 3. 倒易空间项 ---
+    #         kmax = torch.ceil(2 * alpha * torch.sqrt(-torch.log(torch.tensor(accuracy, device=device)))).int()
+            
+    #         b1 = B[:, 0]
+    #         b2 = B[:, 1]
+    #         b3 = B[:, 2]
+            
+    #         h_vals = torch.arange(-kmax, kmax+1, device=device)
+    #         k_vals = torch.arange(-kmax, kmax+1, device=device)
+    #         h_grid, k_grid = torch.meshgrid(h_vals, k_vals, indexing='ij')
+    #         l_grid = torch.zeros_like(h_grid)  # 固定 l=0
+            
+    #         k_vecs = (h_grid.unsqueeze(-1) * b1 + 
+    #                 k_grid.unsqueeze(-1) * b2 +
+    #                 l_grid.unsqueeze(-1) * b3).reshape(-1, 3)
+            
+    #         # 计算 |G|^2
+    #         k_norms_sq = torch.sum(k_vecs**2, dim=1)
+    #         non_zero_mask = k_norms_sq > 1e-10
+    #         k_vecs = k_vecs[non_zero_mask]
+    #         k_norms_sq = k_norms_sq[non_zero_mask]
+            
+    #         if k_vecs.shape[0] == 0:
+    #             recip_contribution = torch.zeros((num_atoms, num_atoms), dtype=dtype, device=device)
+    #         else:
+    #             # 计算 G · r_i for all G and atoms i
+    #             k_dot_r = torch.matmul(k_vecs, pos.T)
+                
+    #             # 权重因子: exp(-|G|^2 / (4α²)) / |G|^2
+    #             exp_factor = torch.exp(-k_norms_sq / (4 * alpha**2)) / k_norms_sq
+                
+    #             # cos(G·r_i) 和 sin(G·r_i)
+    #             cos_kr = torch.cos(k_dot_r)
+    #             sin_kr = torch.sin(k_dot_r)
+                
+    #             # 利用 cos(a - b) = cos a cos b + sin a sin b
+    #             cos_diff = (
+    #                 cos_kr.unsqueeze(2) * cos_kr.unsqueeze(1) +
+    #                 sin_kr.unsqueeze(2) * sin_kr.unsqueeze(1)
+    #             )
+                
+    #             # 加权求和 over G
+    #             weighted_sum = (exp_factor.unsqueeze(1).unsqueeze(2) * cos_diff).sum(dim=0)
+    #             recip_contribution = lambda_val * (k_const/2) * (4 * torch.pi / V) * weighted_sum
+            
+    #         # 添加到 Coulomb 矩阵 J
+    #         J += recip_contribution
+            
+    #         # --- 4. 自能修正 ---
+    #         self_energy_correction = -2 * alpha / torch.sqrt(torch.tensor(torch.pi, device=device))
+    #         for i in range(num_atoms):
+    #             # 对角元添加化学硬度和自能修正
+    #             J[i, i] = eta[i] + lambda_val * (k_const/2) * self_energy_correction
+                
+    #             # 添加实空间自能项（周期性边界）
+    #             for u in range(-2, 3):  # mR=2
+    #                 for v in range(-2, 3):
+    #                     for w in range(-2, 3):
+    #                         if u == 0 and v == 0 and w == 0:
+    #                             continue
+    #                         delta = torch.tensor([u, v, w], dtype=dtype, device=device) @ cell
+    #                         dij = torch.norm(delta)
+    #                         if dij > 1e-10 and dij < r_cutoff:
+    #                             dij_safe = dij + 1e-10
+    #                             erfc_term = torch.erfc(alpha * dij_safe) / dij_safe
+    #                             J[i, i] += lambda_val * (k_const/2) * erfc_term
+            
+    #         return J
+        
+    #     # 获取晶胞
+    #     cell = inputs.cell.view(3, 3)
+        
+    #     # 构建完整的 J 矩阵
+    #     J_full = build_qeq_matrix_A(eta, pos, cell, 6.0, 1.0e-5, edge_index, edge_vec)
+        
+    #     # 按照原始代码格式构建增广矩阵
+    #     # --- 5. 构建总矩阵 ---
+    #     A = J_full  # 在 C++ 逻辑中，J_full 已经包含了化学硬度和自能修正
+        
+    #     # --- 6. 增广系统 ---
+    #     A_aug = torch.zeros((N + 1, N + 1), dtype=dtype, device=device)
+    #     A_aug[:N, :N] = A
+    #     A_aug[:N, -1] = 1.0
+    #     A_aug[-1, :N] = 1.0
+        
+    #     # 构建增广右端项
+    #     b_aug = torch.zeros(N + 1, dtype=dtype, device=device)
+    #     b_aug[:N] = -chi           # 电负性项（带负号！）
+    #     b_aug[N] = Q_total         # 总电荷约束
+        
+    #     # 求解线性方程组
+    #     try:
+    #         x_aug_solution = torch.linalg.solve(A_aug, b_aug.unsqueeze(1))
+    #         mol_q_eq = x_aug_solution[:N, 0]
+    #         lambda_sol = x_aug_solution[N, 0]
+    #     except torch.linalg.LinAlgError:
+    #         # 如果矩阵奇异，使用伪逆
+    #         A_pinv = torch.linalg.pinv(A_aug)
+    #         x_aug_solution = A_pinv @ b_aug.unsqueeze(1)
+    #         mol_q_eq = x_aug_solution[:N, 0]
+    #         lambda_sol = x_aug_solution[N, 0]
+        
+    #     return mol_q_eq, lambda_sol
 
     
     
