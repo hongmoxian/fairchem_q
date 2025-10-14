@@ -1362,16 +1362,16 @@ class GemNetOC(BaseModel):
 
 
         nMolecules = torch.max(batch) + 1
-        electronegativity_energy = self.qeq_module.get_electronegativity_energy(
-            pred_electronegativity=chi, 
-            pred_electronegativity_hardness=eta, 
-            pred_charge=pre_charge, 
-            inputs=data, 
-            nmols=nMolecules
-        )   # 总能里面不要这一项
+        # electronegativity_energy = self.qeq_module.get_electronegativity_energy(
+        #     pred_electronegativity=chi, 
+        #     pred_electronegativity_hardness=eta, 
+        #     pred_charge=pre_charge, 
+        #     inputs=data, 
+        #     nmols=nMolecules
+        # )   # 总能里面不要这一项
         
         # 合并所有能量项
-        charge_energy = coul_energy + electronegativity_energy
+        charge_energy = coul_energy
         # total_energy = E_t + charge_energy
 
         if self.direct_forces:
@@ -1470,7 +1470,7 @@ class GemNetOC(BaseModel):
         # w = self.out_w(x_E_with_charge)
         # w_energy = scatter_det(w, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
         # w_energy = w_energy.squeeze(-1)  # (nMolecules,)
-        outputs["w"] = -lambda_sol -4.44
+        outputs["w"] = -lambda_sol
             
 
         return outputs
