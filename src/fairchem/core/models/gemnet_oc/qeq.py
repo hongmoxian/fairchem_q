@@ -147,14 +147,14 @@ class QEqModule(nn.Module):
         # #     "N":  7.5,   # 比C硬，比O略软
         # # }
         
-        # self.name2chi = {
-        #      "K":2.42,
-        #     "C":5.34,
-        #     "H":4.53,
-        #     "O":8.74,
-        #     "Ni":4.47,
-        #     "N":6.9,
-        # }
+        self.name2chi_ = {
+             "K":2.42,
+            "C":5.34,
+            "H":4.53,
+            "O":8.74,
+            "Ni":4.47,
+            "N":6.9,
+        }
 
         self.name2chi = {
             "K": nn.Parameter(torch.tensor(self.name2chi_["K"])),
