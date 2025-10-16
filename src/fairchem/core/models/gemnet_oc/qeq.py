@@ -187,10 +187,10 @@ class QEqModule(nn.Module):
         self.pretrain = False
         # # 初始化网络参数
         #     self._initialize_weights()
-        if os.path.exists("checkpoint_python.pt"):
+        if os.path.exists("/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/k-co2/q-no-mean/charge-v3/checkpoint_python.pt"):
             self.pretrain = True
             # self.qeq_module = torch.load(self.config["qeq_model_path"])
-            model = torch.load("checkpoint_python.pt")
+            model = torch.load("/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/k-co2/q-no-mean/charge-v3/checkpoint_python.pt", map_location=torch.device('cuda') if torch.cuda.is_available() else 'cpu')
             self.electronegativity_mlp.load_state_dict(model["chi"])
             self.hardness_mlp.load_state_dict(model["eta"])
 
@@ -200,12 +200,12 @@ class QEqModule(nn.Module):
                 param.requires_grad = False
             name2chi_params = model["name2chi_params"] # 假设这是您之前保存的参数字典
             for key, tensor_value in name2chi_params.items():
-                if key in self.model.qeq_module.name2chi:
+                if key in self.name2chi:
                     with torch.no_grad():
-                        self.model.qeq_module.name2chi[key].data.copy_(tensor_value)
+                        self.name2chi[key].data.copy_(tensor_value)
 
             # 2. 【新增】遍历 name2chi 字典，冻结所有参数
-            for param in self.model.qeq_module.name2chi.values():
+            for param in self.name2chi.values():
                 param.requires_grad = False
     
     def _initialize_weights(self, node_feat, atomic_numbers):
@@ -223,6 +223,9 @@ class QEqModule(nn.Module):
         # def forward(self, node_feat, atomic_numbers):
         # 预测 delta_chi 和 delta_eta
         delta_chi = self.electronegativity_mlp(node_feat).squeeze(-1)  # [N]
+        # for name, param in self.electronegativity_mlp.named_parameters():
+        #     grad_status = "✓ 可训练" if param.requires_grad else "✗ 已冻结"
+        #     print(f"{name}: {grad_status}")
         # delta_eta = 0.8*torch.tanh(self.hardness_mlp(node_feat).squeeze(-1))           # [N]
         
         # 获取基础 chi 和 eta
