@@ -196,6 +196,17 @@ class QEqModule(nn.Module):
 
             for param in self.electronegativity_mlp.parameters():
                 param.requires_grad = False
+            for param in self.hardness_mlp.parameters():
+                param.requires_grad = False
+            name2chi_params = model["name2chi_params"] # 假设这是您之前保存的参数字典
+            for key, tensor_value in name2chi_params.items():
+                if key in self.model.qeq_module.name2chi:
+                    with torch.no_grad():
+                        self.model.qeq_module.name2chi[key].data.copy_(tensor_value)
+
+            # 2. 【新增】遍历 name2chi 字典，冻结所有参数
+            for param in self.model.qeq_module.name2chi.values():
+                param.requires_grad = False
     
     def _initialize_weights(self, node_feat, atomic_numbers):
         """初始化网络参数，使初始输出 = 元素经验值"""
