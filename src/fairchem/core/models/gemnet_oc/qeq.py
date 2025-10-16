@@ -7,6 +7,7 @@ import numpy as np
 from ase.data import chemical_symbols
 from torch.autograd import grad
 from torch.optim import LBFGS
+import os
 # import jax
 # import jax.numpy as jnp
 # from jaxopt import LBFGS
@@ -146,23 +147,23 @@ class QEqModule(nn.Module):
         # #     "N":  7.5,   # 比C硬，比O略软
         # # }
         
-        self.name2chi = {
-             "K":2.42,
-            "C":5.34,
-            "H":4.53,
-            "O":8.74,
-            "Ni":4.47,
-            "N":6.9,
-        }
-
         # self.name2chi = {
-        #     "K": nn.Parameter(torch.tensor(self.name2chi_["K"])),
-        #     "C": nn.Parameter(torch.tensor(self.name2chi_["C"])),
-        #     "H": nn.Parameter(torch.tensor(self.name2chi_["H"])),
-        #     "O": nn.Parameter(torch.tensor(self.name2chi_["O"])),
-        #     "Ni": nn.Parameter(torch.tensor(self.name2chi_["Ni"])),
-        #     "N": nn.Parameter(torch.tensor(self.name2chi_["N"])),
+        #      "K":2.42,
+        #     "C":5.34,
+        #     "H":4.53,
+        #     "O":8.74,
+        #     "Ni":4.47,
+        #     "N":6.9,
         # }
+
+        self.name2chi = {
+            "K": nn.Parameter(torch.tensor(self.name2chi_["K"])),
+            "C": nn.Parameter(torch.tensor(self.name2chi_["C"])),
+            "H": nn.Parameter(torch.tensor(self.name2chi_["H"])),
+            "O": nn.Parameter(torch.tensor(self.name2chi_["O"])),
+            "Ni": nn.Parameter(torch.tensor(self.name2chi_["Ni"])),
+            "N": nn.Parameter(torch.tensor(self.name2chi_["N"])),
+        }
         # QEq parameters in eV (Mulliken definition)
         # self.name2chi = {
         #     "H": 7.176,
@@ -183,9 +184,18 @@ class QEqModule(nn.Module):
         # }
         self.initialized = False
         # if not self.initialized:
-            
+        self.pretrain = False
         # # 初始化网络参数
         #     self._initialize_weights()
+        if os.path.exists("checkpoint_python.pt"):
+            self.pretrain = True
+            # self.qeq_module = torch.load(self.config["qeq_model_path"])
+            model = torch.load("checkpoint_python.pt")
+            self.electronegativity_mlp.load_state_dict(model["chi"])
+            self.hardness_mlp.load_state_dict(model["eta"])
+
+            for param in self.electronegativity_mlp.parameters():
+                param.requires_grad = False
     
     def _initialize_weights(self, node_feat, atomic_numbers):
         """初始化网络参数，使初始输出 = 元素经验值"""
@@ -201,7 +211,7 @@ class QEqModule(nn.Module):
 
         # def forward(self, node_feat, atomic_numbers):
         # 预测 delta_chi 和 delta_eta
-        delta_chi = 2* torch.tanh(self.electronegativity_mlp(node_feat).squeeze(-1))  # [N]
+        delta_chi = self.electronegativity_mlp(node_feat).squeeze(-1)  # [N]
         # delta_eta = 0.8*torch.tanh(self.hardness_mlp(node_feat).squeeze(-1))           # [N]
         
         # 获取基础 chi 和 eta
@@ -546,7 +556,7 @@ class QEqModule(nn.Module):
             # 计算晶胞参数
             V = torch.abs(torch.det(cell))  # 体积（Å³）
             L_z = torch.norm(cell.view(3, 3)[:, 2])       # z方向晶胞长度（Å）
-            ab = V / L_z
+            # ab = V / L_z
             
             # 提取z坐标（假设z方向是非周期方向）
             z = positions[:, 2]  # [N]
@@ -566,7 +576,7 @@ class QEqModule(nn.Module):
             term3 = Q_total**2 * L_z**2 / 12          # Q_tot² L_z² / 12
             
             # 完整偶极修正
-            E_dipole = (2 * torch.pi / ab) * (term1 - term2 - term3)
+            E_dipole = (2 * torch.pi / V) * (term1 - term2 - term3)
             
             # 单位转换
             # E_dipole *= EV_ANGSTROM
