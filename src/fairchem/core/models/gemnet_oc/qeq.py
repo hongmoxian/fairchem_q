@@ -187,26 +187,26 @@ class QEqModule(nn.Module):
         self.pretrain = False
         # # 初始化网络参数
         #     self._initialize_weights()
-        if os.path.exists("/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/k-co2/q-no-mean/charge-v3/checkpoint_python.pt"):
-            self.pretrain = True
-            # self.qeq_module = torch.load(self.config["qeq_model_path"])
-            model = torch.load("/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/k-co2/q-no-mean/charge-v3/checkpoint_python.pt", map_location=torch.device('cuda') if torch.cuda.is_available() else 'cpu')
-            self.electronegativity_mlp.load_state_dict(model["chi"])
-            self.hardness_mlp.load_state_dict(model["eta"])
+        # if os.path.exists("/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/k-co2/q-no-mean/charge-v3/charge-v4/checkpoints/2025-10-17-11-52-32/checkpoint.pt"):
+        #     self.pretrain = True
+        #     # self.qeq_module = torch.load(self.config["qeq_model_path"])
+        #     model = torch.load("/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/k-co2/q-no-mean/charge-v3/charge-v4/checkpoints/2025-10-17-11-52-32/checkpoint.pt", map_location=torch.device('cuda') if torch.cuda.is_available() else 'cpu')
+        #     self.electronegativity_mlp.load_state_dict(model["chi"])
+        #     self.hardness_mlp.load_state_dict(model["eta"])
 
-            for param in self.electronegativity_mlp.parameters():
-                param.requires_grad = False
-            for param in self.hardness_mlp.parameters():
-                param.requires_grad = False
-            name2chi_params = model["name2chi_params"] # 假设这是您之前保存的参数字典
-            for key, tensor_value in name2chi_params.items():
-                if key in self.name2chi:
-                    with torch.no_grad():
-                        self.name2chi[key].data.copy_(tensor_value)
+        #     for param in self.electronegativity_mlp.parameters():
+        #         param.requires_grad = False
+        #     for param in self.hardness_mlp.parameters():
+        #         param.requires_grad = False
+        #     name2chi_params = model["name2chi_params"] # 假设这是您之前保存的参数字典
+        #     for key, tensor_value in name2chi_params.items():
+        #         if key in self.name2chi:
+        #             with torch.no_grad():
+        #                 self.name2chi[key].data.copy_(tensor_value)
 
-            # 2. 【新增】遍历 name2chi 字典，冻结所有参数
-            for param in self.name2chi.values():
-                param.requires_grad = False
+        #     # 2. 【新增】遍历 name2chi 字典，冻结所有参数
+        #     for param in self.name2chi.values():
+        #         param.requires_grad = False
     
     def _initialize_weights(self, node_feat, atomic_numbers):
         """初始化网络参数，使初始输出 = 元素经验值"""
