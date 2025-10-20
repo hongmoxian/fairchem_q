@@ -174,7 +174,7 @@ class OCPTrainer(BaseTrainer):
                         "lr": self.scheduler.get_lr(),
                         "epoch": self.epoch,
                         "step": self.step,
-                        "w": out['w'].mean().item(),
+                        "w": out['w'].item(),
                         "q1": out['bader'][0].item(),
                         "q2": out['bader'][1].item(),
                         "q3": out['bader'][2].item(),

@@ -129,6 +129,7 @@ class QEqModule(nn.Module):
             "O":13.36,
             "Ni":8.41,
             "N":11.76,
+            "Au":6.27,
         }
         # self.name2eta = {
         #     "K": nn.Parameter(torch.tensor(self.name2eta_["K"])),
@@ -147,23 +148,24 @@ class QEqModule(nn.Module):
         # #     "N":  7.5,   # 比C硬，比O略软
         # # }
         
-        self.name2chi_ = {
+        self.name2chi = {
              "K":2.42,
             "C":5.34,
             "H":4.53,
             "O":8.74,
             "Ni":4.47,
             "N":6.9,
+            "Au":4,44,
         }
 
-        self.name2chi = {
-            "K": nn.Parameter(torch.tensor(self.name2chi_["K"])),
-            "C": nn.Parameter(torch.tensor(self.name2chi_["C"])),
-            "H": nn.Parameter(torch.tensor(self.name2chi_["H"])),
-            "O": nn.Parameter(torch.tensor(self.name2chi_["O"])),
-            "Ni": nn.Parameter(torch.tensor(self.name2chi_["Ni"])),
-            "N": nn.Parameter(torch.tensor(self.name2chi_["N"])),
-        }
+        # self.name2chi = {
+        #     "K": nn.Parameter(torch.tensor(self.name2chi_["K"])),
+        #     "C": nn.Parameter(torch.tensor(self.name2chi_["C"])),
+        #     "H": nn.Parameter(torch.tensor(self.name2chi_["H"])),
+        #     "O": nn.Parameter(torch.tensor(self.name2chi_["O"])),
+        #     "Ni": nn.Parameter(torch.tensor(self.name2chi_["Ni"])),
+        #     "N": nn.Parameter(torch.tensor(self.name2chi_["N"])),
+        # }
         # QEq parameters in eV (Mulliken definition)
         # self.name2chi = {
         #     "H": 7.176,

@@ -1284,7 +1284,7 @@ class GemNetOC(BaseModel):
         # subgraph["edge_index"] = subgraph["edge_index"][:, edge_mask]
         # subgraph["distance"] = subgraph["distance"][edge_mask]
         # Embedding block
-        # data.charge.requires_grad_(True)
+        data.charge.requires_grad_(True)
         charge_per_atom = -data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         h = self.atom_emb(atomic_numbers)  # 83 * 128
         # (nAtoms, emb_size_atom)
@@ -1458,7 +1458,7 @@ class GemNetOC(BaseModel):
                 # F_t = self.force_scaler.calc_forces_and_update(corr_energy, pos)
                 # F_t_e = self.force_scaler.calc_forces_and_update(charge_energy, pos) # 测试使用
 
-                w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项
+                w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, -data.charge)  # 这里需要好好考虑第一项
                 # w_short = self.force_scaler.calc_forces_and_update(mol_energy, data.charge)
                 # w_long = self.force_scaler.calc_forces_and_update(charge_energy, data.charge)
                 # w = w_short + w_long
