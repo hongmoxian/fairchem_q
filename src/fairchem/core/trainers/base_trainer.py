@@ -199,7 +199,7 @@ class BaseTrainer(ABC):
         return timestamp_str
 
     def load(self) -> None:
-        pretrain = True
+        pretrain = False
         self.load_seed_from_config()
         self.load_logger()
         self.load_datasets()
