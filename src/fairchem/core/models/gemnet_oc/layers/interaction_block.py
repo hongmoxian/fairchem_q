@@ -137,7 +137,7 @@ class InteractionBlock(torch.nn.Module):
 
         if atom_edge_interaction:
             self.atom_edge_interaction = TripletInteraction(
-                emb_size_in=emb_size_atom,
+                emb_size_in=emb_size_atom + 1,
                 emb_size_out=emb_size_edge,
                 emb_size_trip_in=emb_size_trip_in,
                 emb_size_trip_out=emb_size_trip_out,
@@ -152,7 +152,7 @@ class InteractionBlock(torch.nn.Module):
         if edge_atom_interaction:
             self.edge_atom_interaction = TripletInteraction(
                 emb_size_in=emb_size_edge,
-                emb_size_out=emb_size_atom,
+                emb_size_out=emb_size_atom + 1,
                 emb_size_trip_in=emb_size_trip_in,
                 emb_size_trip_out=emb_size_trip_out,
                 emb_size_rbf=emb_size_rbf,
@@ -165,7 +165,7 @@ class InteractionBlock(torch.nn.Module):
             self.edge_atom_interaction = None
         if atom_interaction:
             self.atom_interaction = PairInteraction(
-                emb_size_atom=emb_size_atom,
+                emb_size_atom=emb_size_atom + 1,
                 emb_size_pair_in=emb_size_a2a_in,
                 emb_size_pair_out=emb_size_a2a_out,
                 emb_size_rbf=emb_size_rbf,
@@ -201,7 +201,7 @@ class InteractionBlock(torch.nn.Module):
         self.atom_emb_layers = torch.nn.ModuleList(
             [
                 ResidualLayer(
-                    emb_size_atom,
+                    emb_size_atom + 1,
                     activation=activation,
                 )
                 for _ in range(num_atom_emb_layers)
@@ -218,7 +218,7 @@ class InteractionBlock(torch.nn.Module):
 
         ## ---------- Update Edge Embeddings with Atom Embeddings --------- ##
         self.concat_layer = EdgeEmbedding(
-            emb_size_atom,
+            emb_size_atom + 1,
             emb_size_edge,
             emb_size_edge,
             activation=activation,
@@ -558,8 +558,8 @@ class TripletInteraction(torch.nn.Module):
 
         # Dense transformation
         self.dense_ba = Dense(
-            emb_size_in + 1,
-            emb_size_in + 1,
+            emb_size_in,
+            emb_size_in,
             activation=activation,
             bias=False,
         )
