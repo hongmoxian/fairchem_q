@@ -175,9 +175,9 @@ class OCPTrainer(BaseTrainer):
                         "epoch": self.epoch,
                         "step": self.step,
                         "w": out['w'].mean().item(),
-                        "q1": out['charge'][0].item(),
-                        "q2": out['charge'][1].item(),
-                        "q3": out['charge'][2].item(),
+                        "q1": out['bader'][0].item(),
+                        "q2": out['bader'][1].item(),
+                        "q3": out['bader'][2].item(),
                         "charge_energy": out['charge_energy'].item(),
                         "lambda_sol": out['lambda_sol'].item(),
                     }
@@ -187,10 +187,13 @@ class OCPTrainer(BaseTrainer):
                 try:
                     energy_w = self._get_dynamic_loss_weight("energy", default=None)
                     forces_w = self._get_dynamic_loss_weight("forces", default=None)
+                    bader_w = self._get_dynamic_loss_weight("bader", default=None)
                     if energy_w is not None:
                         log_dict.update({"lossw_energy": float(energy_w)})
                     if forces_w is not None:
                         log_dict.update({"lossw_forces": float(forces_w)})
+                    if bader_w is not None:
+                        log_dict.update({"lossw_bader": float(bader_w)})
                 except Exception:
                     pass
 
@@ -262,7 +265,7 @@ class OCPTrainer(BaseTrainer):
         batch_size = batch.natoms.numel()
         num_atoms_in_batch = batch.natoms.sum()
         for target_key in self.output_targets:
-            if target_key == 'charge_energy' or target_key == 'lambda_sol':
+            if target_key == 'charge_energy' or target_key == 'lambda_sol' or target_key == 'charge':
                 continue
             ### Target property is a direct output of the model
             if target_key in out:
@@ -309,7 +312,7 @@ class OCPTrainer(BaseTrainer):
                 pred = pred.view(batch_size, -1)
 
             outputs[target_key] = pred
-        outputs['charge'] = out.get('charge', None)
+        outputs['bader'] = out.get('bader', None)
         outputs['charge_energy'] = out.get('charge_energy', None)
         outputs['w'] = out.get('w', None)
         outputs['lambda_sol'] = out.get('lambda_sol', None)
@@ -332,6 +335,15 @@ class OCPTrainer(BaseTrainer):
             natoms = batch.natoms
             natoms = torch.repeat_interleave(natoms, natoms)
 
+            if self.output_targets[target_name]["level"] == "atom":
+                if target_name == 'bader':
+                    # num_atoms_in_batch = natoms.numel()
+                    target = torch.tensor(target[0], dtype=torch.float32, device='cuda' if torch.cuda.is_available() else 'cpu').view(-1)
+                else:
+                    target = target.view(num_atoms_in_batch, -1)
+            else:
+                target = target.view(batch_size, -1)
+
             if (
                 self.output_targets[target_name]["level"] == "atom"
                 and self.output_targets[target_name]["train_on_free_atoms"]
@@ -350,10 +362,7 @@ class OCPTrainer(BaseTrainer):
                 target = self.normalizers[target_name].norm(target)
 
             ### reshape accordingly: num_atoms_in_batch, -1 or num_systems_in_batch, -1
-            if self.output_targets[target_name]["level"] == "atom":
-                target = target.view(num_atoms_in_batch, -1)
-            else:
-                target = target.view(batch_size, -1)
+
 
             # Base static multiplier from config
             base_mult = loss_info["coefficient"]
@@ -454,7 +463,7 @@ class OCPTrainer(BaseTrainer):
             # self.loss_dict['loss_w'] = loss_w * 1000
         # Sanity check to make sure the compute graph is correct.
         if calc_charge:
-            loss_charge = torch.mean(torch.abs(out['charge'] - torch.tensor(batch.bader[0], device=out['charge'].device, dtype=out['charge'].dtype)))  # 这里的bader是个数组
+            loss_charge = torch.mean(torch.abs(out['bader'] - torch.tensor(batch.bader[0], device=out['bader'].device, dtype=out['bader'].dtype)))  # 这里的bader是个数组
             self.loss_dict['loss_charge'] = loss_charge * 100
             loss.append(loss_charge * 100)
         for lc in loss:
@@ -558,8 +567,10 @@ class OCPTrainer(BaseTrainer):
 
             if target_name == "w":
                 continue
-                
             target = batch[target_name]
+            if target_name == 'bader':
+                    # num_atoms_in_batch = natoms.numel()
+                target = torch.tensor(target[0], dtype=torch.float32, device='cuda' if torch.cuda.is_available() else 'cpu').view(-1)
             num_atoms_in_batch = batch.natoms.sum()
 
             if (

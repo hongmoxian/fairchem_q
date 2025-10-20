@@ -1403,7 +1403,7 @@ class GemNetOC(BaseModel):
         
         outputs = {"charge_energy": charge_energy}
         # outputs["qeq_force"] = loss_qeq
-        outputs['charge'] = pre_charge
+        outputs['bader'] = pre_charge
         outputs['lambda_sol'] = lambda_sol
         # E_q = self.get_q(
         #         num_atoms, q, subgraph["distance"], subgraph['edge_index'][0], subgraph['edge_index'][1], pos, data.cell, nMolecules, batch
