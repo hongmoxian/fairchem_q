@@ -558,8 +558,8 @@ class TripletInteraction(torch.nn.Module):
 
         # Dense transformation
         self.dense_ba = Dense(
-            emb_size_in,
-            emb_size_in,
+            emb_size_in + 1,
+            emb_size_in + 1,
             activation=activation,
             bias=False,
         )

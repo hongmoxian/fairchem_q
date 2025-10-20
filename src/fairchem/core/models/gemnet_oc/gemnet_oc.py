@@ -304,7 +304,7 @@ class GemNetOC(BaseModel):
         # Embedding blocks
         self.atom_emb = AtomEmbedding(emb_size_atom, num_elements)
         self.edge_emb = EdgeEmbedding(
-            emb_size_atom, num_radial, emb_size_edge, activation=activation
+            emb_size_atom + 1, num_radial, emb_size_edge, activation=activation
         )    # (nEdges, emb_size)
         self.lr_cutoff = self.cutoff + 6
         # self.get_q = ElectrostaticEnergy(
@@ -1285,10 +1285,10 @@ class GemNetOC(BaseModel):
         # subgraph["distance"] = subgraph["distance"][edge_mask]
         # Embedding block
         # data.charge.requires_grad_(True)
-        # charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
+        charge_per_atom = -data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         h = self.atom_emb(atomic_numbers)  # 83 * 128
         # (nAtoms, emb_size_atom)
-        # h = torch.cat([h, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
+        h = torch.cat([h, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
         m = self.edge_emb(h, basis_rad_raw, main_graph["edge_index"])  # basis_rad_raw 2维
         # (nEdges, emb_size_edge) 
 
@@ -1326,9 +1326,9 @@ class GemNetOC(BaseModel):
         # 1. 原子特征
         x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1)) # (nAtoms, emb_size_atom)
         # 2. 将charge扩展到每个原子
-        charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
+        # charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         # 3. 拼接charge到原子特征
-        x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
+        # x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
         # 4. 预测原子能量
         atom_energy = self.out_energy(x_E)  # (nAtoms, 1)
         # 5. 聚合为分子能量
@@ -1458,7 +1458,7 @@ class GemNetOC(BaseModel):
                 # F_t = self.force_scaler.calc_forces_and_update(corr_energy, pos)
                 # F_t_e = self.force_scaler.calc_forces_and_update(charge_energy, pos) # 测试使用
 
-                # w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项
+                w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项
                 # w_short = self.force_scaler.calc_forces_and_update(mol_energy, data.charge)
                 # w_long = self.force_scaler.calc_forces_and_update(charge_energy, data.charge)
                 # w = w_short + w_long
@@ -1469,7 +1469,7 @@ class GemNetOC(BaseModel):
         # w = self.out_w(x_E_with_charge)
         # w_energy = scatter_det(w, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
         # w_energy = w_energy.squeeze(-1)  # (nMolecules,)
-        outputs["w"] = -lambda_sol
+        outputs["w"] = w
             
 
         return outputs

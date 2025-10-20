@@ -47,7 +47,7 @@ class AtomUpdateBlock(torch.nn.Module):
         self.dense_rbf = Dense(emb_size_rbf, emb_size_edge, activation=None, bias=False)
         self.scale_sum = ScaleFactor()
 
-        self.layers = self.get_mlp(emb_size_edge, emb_size_atom, nHidden, activation)
+        self.layers = self.get_mlp(emb_size_edge, emb_size_atom + 1, nHidden, activation)
 
     def get_mlp(self, units_in: int, units: int, nHidden: int, activation):
         if units_in != units:
@@ -131,7 +131,7 @@ class OutputBlock(AtomUpdateBlock):
         self.seq_energy_pre = self.layers  # inherited from parent class
         if nHidden_afteratom >= 1:
             self.seq_energy2 = self.get_mlp(
-                emb_size_atom, emb_size_atom, nHidden_afteratom, activation
+                emb_size_atom + 1, emb_size_atom + 1, nHidden_afteratom, activation
             )
             self.inv_sqrt_2 = 1 / math.sqrt(2.0)
         else:
