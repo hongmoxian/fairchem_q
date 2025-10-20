@@ -131,7 +131,7 @@ class OutputBlock(AtomUpdateBlock):
         self.seq_energy_pre = self.layers  # inherited from parent class
         if nHidden_afteratom >= 1:
             self.seq_energy2 = self.get_mlp(
-                emb_size_atom + 1, emb_size_atom + 1, nHidden_afteratom, activation
+                emb_size_atom + 1, emb_size_atom, nHidden_afteratom, activation
             )
             self.inv_sqrt_2 = 1 / math.sqrt(2.0)
         else:
