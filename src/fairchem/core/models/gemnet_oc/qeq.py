@@ -116,9 +116,9 @@ class QEqModule(nn.Module):
         }
 
         self.charge_mlp_initialized = False
-        self.electronegativity_mlp = MLP(256, self.electronegativity_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
-        self.hardness_mlp = MLP(256, self.hardness_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
-        # self.charge_mlp = MLP(256+1, self.charge_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
+        # self.electronegativity_mlp = MLP(256, self.electronegativity_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
+        # self.hardness_mlp = MLP(256, self.hardness_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
+        self.charge_mlp = MLP(256, self.charge_mlp_hidden_dims, 1).to(torch.device('cuda') if torch.cuda.is_available() else 'cpu')
         # self.charge_mlp.initialize_weights()
         
         # 添加可训练的电荷偏置参数
@@ -155,7 +155,7 @@ class QEqModule(nn.Module):
             "O":8.74,
             "Ni":4.47,
             "N":6.9,
-            "Au":4,44,
+            "Au":4.44,
         }
 
         # self.name2chi = {
@@ -275,7 +275,7 @@ class QEqModule(nn.Module):
 
             # 更新charge_mlp的最后一层偏置，使其产生所需的初始分布
 
-    def predict_charge(self, inputs):
+    def predict_charge(self, node_feat, inputs):
         """
         预测原子电荷，在训练和推理时使用不同的策略
         """
@@ -284,7 +284,7 @@ class QEqModule(nn.Module):
         #         self.initialize_charge_mlp(node_feat, inputs)
 
         # 获取基础电荷预测
-        # charge = self.charge_mlp(node_feat).squeeze(-1).float()
+        charge = self.charge_mlp(node_feat).squeeze(-1).to(torch.float32)
         # charge = torch.zeros_like(inputs['atomic_numbers'], dtype=torch.float32)
         
         # # 在训练模式下，添加元素特定的偏置
@@ -292,7 +292,7 @@ class QEqModule(nn.Module):
         #     symbol = chemical_symbols[int(atomic_num)]
         #     if symbol in self.target_charge_dict:
         #         charge[i] = self.target_charge_dict[symbol]
-        charge = torch.tensor(inputs.bader, dtype=torch.float32).squeeze()
+        # charge = torch.tensor(inputs.bader, dtype=torch.float32).squeeze()
         # for elem, indices in self._get_element_indices(inputs['atomic_numbers']).items():
         #     if elem in self.target_charge_dict:
         #         charge[indices] = charge[indices] + self.target_charge_dict[elem]
@@ -303,44 +303,44 @@ class QEqModule(nn.Module):
         # 计算电负性，用于加权
         # pred_electronegativity = self.electronegativity_mlp(node_feat).squeeze(-1)
 
-        # en_dict = {
-        #     'H': 2.20, 'Li': 0.98, 'Be': 1.57, 'B': 2.04, 'C': 2.55, 'N': 3.04,
-        #     'O': 3.44, 'F': 3.98, 'Na': 0.93, 'Mg': 1.31, 'Al': 1.61, 'Si': 1.90,
-        #     'P': 2.19, 'S': 2.58, 'Cl': 3.16, 'K': 0.82, 'Ca': 1.00, 'Sc': 1.36,
-        #     'Ti': 1.54, 'V': 1.63, 'Cr': 1.66, 'Mn': 1.55, 'Fe': 1.83, 'Co': 1.88,
-        #     'Ni': 1.91, 'Cu': 1.90, 'Zn': 1.65, 'Ga': 1.81, 'Ge': 2.01, 'As': 2.18,
-        #     'Se': 2.48, 'Br': 2.96, 'Rb': 0.82, 'Sr': 0.95, 'Y': 1.22, 'Zr': 1.33,
-        #     'Nb': 1.59, 'Mo': 2.16, 'Tc': 1.91, 'Ru': 2.20, 'Rh': 2.28, 'Pd': 2.20,
-        #     'Ag': 1.93, 'Cd': 1.69, 'In': 1.78, 'Sn': 1.96, 'Sb': 2.05, 'Te': 2.12,
-        #     'I': 2.66, 'Cs': 0.79, 'Ba': 0.89, 'La': 1.10, 'Ce': 1.12, 'Pr': 1.13,
-        #     'Nd': 1.14, 'Pm': 1.13, 'Sm': 1.17, 'Eu': 1.20, 'Gd': 1.20, 'Tb': 1.22,
-        #     'Dy': 1.23, 'Ho': 1.24, 'Er': 1.24, 'Tm': 1.25, 'Yb': 1.26, 'Lu': 1.27,
-        #     'Hf': 1.30, 'Ta': 1.50, 'W': 2.36, 'Re': 1.93, 'Os': 2.18, 'Ir': 2.20,
-        #     'Pt': 2.28, 'Au': 2.54, 'Hg': 2.00, 'Tl': 1.62, 'Pb': 2.33, 'Bi': 2.02
-        # }   
-        # pred_electronegativity = torch.tensor([en_dict[chemical_symbols[int(i)]] for i in inputs['atomic_numbers']], device=inputs['atomic_numbers'].device)
+        en_dict = {
+            'H': 2.20, 'Li': 0.98, 'Be': 1.57, 'B': 2.04, 'C': 2.55, 'N': 3.04,
+            'O': 3.44, 'F': 3.98, 'Na': 0.93, 'Mg': 1.31, 'Al': 1.61, 'Si': 1.90,
+            'P': 2.19, 'S': 2.58, 'Cl': 3.16, 'K': 0.82, 'Ca': 1.00, 'Sc': 1.36,
+            'Ti': 1.54, 'V': 1.63, 'Cr': 1.66, 'Mn': 1.55, 'Fe': 1.83, 'Co': 1.88,
+            'Ni': 1.91, 'Cu': 1.90, 'Zn': 1.65, 'Ga': 1.81, 'Ge': 2.01, 'As': 2.18,
+            'Se': 2.48, 'Br': 2.96, 'Rb': 0.82, 'Sr': 0.95, 'Y': 1.22, 'Zr': 1.33,
+            'Nb': 1.59, 'Mo': 2.16, 'Tc': 1.91, 'Ru': 2.20, 'Rh': 2.28, 'Pd': 2.20,
+            'Ag': 1.93, 'Cd': 1.69, 'In': 1.78, 'Sn': 1.96, 'Sb': 2.05, 'Te': 2.12,
+            'I': 2.66, 'Cs': 0.79, 'Ba': 0.89, 'La': 1.10, 'Ce': 1.12, 'Pr': 1.13,
+            'Nd': 1.14, 'Pm': 1.13, 'Sm': 1.17, 'Eu': 1.20, 'Gd': 1.20, 'Tb': 1.22,
+            'Dy': 1.23, 'Ho': 1.24, 'Er': 1.24, 'Tm': 1.25, 'Yb': 1.26, 'Lu': 1.27,
+            'Hf': 1.30, 'Ta': 1.50, 'W': 2.36, 'Re': 1.93, 'Os': 2.18, 'Ir': 2.20,
+            'Pt': 2.28, 'Au': 2.54, 'Hg': 2.00, 'Tl': 1.62, 'Pb': 2.33, 'Bi': 2.02
+        }   
+        pred_electronegativity = torch.tensor([en_dict[chemical_symbols[int(i)]] for i in inputs['atomic_numbers']], device=inputs['atomic_numbers'].device)
         
-        # # 基于电负性计算权重 (逆比例，电负性高的原子权重小)
-        # epsilon = 1e-6  # 避免除零
-        # weights = 1.0 / (pred_electronegativity + epsilon)
+        # # # 基于电负性计算权重 (逆比例，电负性高的原子权重小)
+        epsilon = 1e-6  # 避免除零
+        weights = 1.0 / (pred_electronegativity + epsilon)
         
         # # 计算每个分子的总charge和natoms
-        # sum_charge = scatter(charge, inputs.batch, dim=0)
-        # natoms = scatter(torch.ones_like(inputs.batch, dtype=torch.float32), inputs.batch, dim=0)
+        sum_charge = scatter(charge, inputs.batch, dim=0)
+        natoms = scatter(torch.ones_like(inputs.batch, dtype=torch.float32), inputs.batch, dim=0)
         
-        # # 计算每个分子的总权重
-        # sum_weights = scatter(weights, inputs.batch, dim=0)
+        # 计算每个分子的总权重
+        sum_weights = scatter(weights, inputs.batch, dim=0)
         
-        # # 规范化权重 (per-molecule)
-        # normalized_weights = weights / torch.gather(sum_weights, 0, inputs.batch)
+        # 规范化权重 (per-molecule)
+        normalized_weights = weights / torch.gather(sum_weights, 0, inputs.batch)
         
-        # # 计算每个分子的总diff
-        # total_diff = inputs['charge'] - sum_charge
+        # 计算每个分子的总diff
+        total_diff = inputs['charge'] - sum_charge
         
-        # # 分配diff到每个原子
-        # diff_charge = normalized_weights * torch.gather(total_diff, 0, inputs.batch)
+        # 分配diff到每个原子
+        diff_charge = normalized_weights * torch.gather(total_diff, 0, inputs.batch)
         
-        # pred_charge = charge + diff_charge
+        pred_charge = charge + diff_charge
 
         return charge
 
@@ -510,7 +510,7 @@ class QEqModule(nn.Module):
         # )
 
         # # 2. 自能项 (使用α)
-        # self_energy = - (alpha / torch.sqrt(torch.tensor(torch.pi).to(torch.float32))) * torch.sum(pred_charge**2)
+        self_energy = - (alpha / torch.sqrt(torch.tensor(torch.pi).to(torch.float32))) * torch.sum(pred_charge**2)
 
         # 3. 倒易空间项 (使用α参数和K²计算，避免复数运算)
         # 计算k网格
