@@ -174,11 +174,11 @@ class OCPTrainer(BaseTrainer):
                         "lr": self.scheduler.get_lr(),
                         "epoch": self.epoch,
                         "step": self.step,
-                        "w": out['w'].item(),
+                        "w": out['w'].mean().item(),
                         "q1": out['bader'][0].item(),
                         "q2": out['bader'][1].item(),
                         "q3": out['bader'][2].item(),
-                        "charge_energy": out['charge_energy'].item(),
+                        "charge_energy": out['charge_energy'][0].item(),
                     }
                 )
 
@@ -195,7 +195,7 @@ class OCPTrainer(BaseTrainer):
                         log_dict.update({"lossw_bader": float(bader_w)})
                 except Exception:
                     pass
-                self.loss_dict = {k: v.item() for k, v in self.loss_dict.items()}
+
                 log_dict.update(self.loss_dict)
 
                 if (
@@ -308,7 +308,7 @@ class OCPTrainer(BaseTrainer):
             if self.output_targets[target_key]["level"] == "atom":
                 pred = pred.view(num_atoms_in_batch, -1)
             else:
-                pred = pred.view(batch_size, -1)
+                pred = pred.view(batch_size)
 
             outputs[target_key] = pred
         outputs['bader'] = out.get('bader', None)
@@ -341,7 +341,7 @@ class OCPTrainer(BaseTrainer):
                 else:
                     target = target.view(num_atoms_in_batch, -1)
             else:
-                target = target.view(batch_size, -1)
+                target = target.view(batch_size)
 
             if (
                 self.output_targets[target_name]["level"] == "atom"
@@ -375,12 +375,13 @@ class OCPTrainer(BaseTrainer):
                     batch_size=batch_size,
                 )
             
+            
             loss.append(
                 self.loss_dict[target_name]
             )
         calc_qeq = True
         calc_charge = False
-        calc_electronegativity = False
+        calc_val = False
         en_dict = {
             'H': 2.20, 'Li': 0.98, 'Be': 1.57, 'B': 2.04, 'C': 2.55, 'N': 3.04,
             'O': 3.44, 'F': 3.98, 'Na': 0.93, 'Mg': 1.31, 'Al': 1.61, 'Si': 1.90,
@@ -404,7 +405,7 @@ class OCPTrainer(BaseTrainer):
         def electronegativity_rank_loss(output, atoms, en_dict):
             from collections import defaultdict
 
-            charges = output  # 假设输出形状为 [N]
+            charges = output.squeeze()  # 假设输出形状为 [N]
             atom_groups = defaultdict(list)
 
             # 构建原子索引映射：按元素分组
@@ -455,23 +456,24 @@ class OCPTrainer(BaseTrainer):
         #     # self.loss_dict['qeq_loss'] = out['qeq_force'] * 300
         #     # loss.append()
         #     # self.loss_dict['en_loss'] = electronegativity_rank_loss(out['charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
-            loss_w = torch.mean(torch.abs(out['w'] - 4.44 - batch.mu )) * 10
-            self.loss_dict['loss_w'] = loss_w
+            loss_w = torch.mean(torch.abs(out['w'] - 4.44 - batch.mu ))
+            self.loss_dict['loss_w'] = loss_w * 200
         #     loss.append(loss_w)
-            loss.append(loss_w)
+            loss.append(loss_w * 200)
             # self.loss_dict['loss_w'] = loss_w * 1000
         # Sanity check to make sure the compute graph is correct.
         if calc_charge:
-            # loss_charge = torch.mean(torch.abs(out['bader'] - torch.tensor(batch.bader[0], device=out['bader'].device, dtype=out['bader'].dtype)))  # 这里的bader是个数组
-            # self.loss_dict['loss_charge'] = loss_charge * 100
-            # loss.append(loss_charge * 100)
-            loss_chargesum = torch.abs(out['bader'].sum() - -batch.charge) * 20
-            self.loss_dict['loss_chargesum'] = loss_chargesum
-            loss.append(loss_chargesum)
-        if calc_electronegativity:
-            loss_electronegativity = electronegativity_rank_loss(out['bader'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict) * 100
-            self.loss_dict['loss_electronegativity'] = loss_electronegativity
-            loss.append(loss_electronegativity)
+            loss_charge = torch.mean(torch.abs(out['bader'] - torch.tensor(batch.bader[0], device=out['bader'].device, dtype=out['bader'].dtype)))  # 这里的bader是个数组
+            self.loss_dict['loss_charge'] = loss_charge * 100
+            loss.append(loss_charge * 100)
+
+        if calc_val:
+            min_var = 0.72
+            loss_var = (min_var - torch.var(out['bader']))**2 * 100
+            self.loss_dict['loss_var'] = loss_var
+            loss.append(loss_var)
+
+
         for lc in loss:
             assert hasattr(lc, "grad_fn")
 
@@ -568,12 +570,12 @@ class OCPTrainer(BaseTrainer):
 
         targets = {}
         for target_name in self.output_targets:
-            if target_name == "charge":
+            if target_name == "charge" or target_name == "bader":
                 continue
-
             if target_name == "w":
-                continue
-            target = batch[target_name]
+                target = batch.mu + 4.44
+            else:
+                target = batch[target_name]
             num_atoms_in_batch = batch.natoms.sum()
 
             if (
@@ -588,7 +590,7 @@ class OCPTrainer(BaseTrainer):
             if self.output_targets[target_name]["level"] == "atom":
                 target = target.view(num_atoms_in_batch, -1)
             else:
-                target = target.view(batch_size, -1)
+                target = target.view(batch_size)
 
             targets[target_name] = target
             if self.normalizers.get(target_name, False):
@@ -705,12 +707,10 @@ class OCPTrainer(BaseTrainer):
                             predictions[f"{target_key}_chunk_idx"].extend(_chunk_idx)
                 else:
                     predictions[f"{target_key}"] = pred.detach()
-            if 'bader' in out.keys():
-                predictions['bader'] = out['bader'].detach()
-            if 'w' in out.keys():
-                predictions['w'] = out['w'].detach()
+
             if not per_image:
                 return predictions
+
             ### Get unique system identifiers
             sids = (
                 batch.sid.tolist() if isinstance(batch.sid, torch.Tensor) else batch.sid
