@@ -1338,11 +1338,11 @@ class GemNetOC(BaseModel):
         mol_energy = mol_energy.squeeze(-1)  # (nMolecules,)
         
         # 使用模型的x_E来预测电荷
-        # chi, eta = self.qeq_module._initialize_weights(x_E, data.atomic_numbers)
+        chi, eta = self.qeq_module._initialize_weights(x_E)
         # initial_charge = self.qeq_module.predict_charge(data)
 
         # pre_charge, lambda_sol = self.qeq_module.solve_qeq(initial_charge=initial_charge, chi=chi, J=eta, inputs=data, dij_vec=main_graph["vector"], row=main_graph["edge_index"][0], col=main_graph["edge_index"][1], Q_total=-data.charge, max_iter=1000)
-        # pre_charge, lambda_sol = self.qeq_module.solve_qeq_linear_system(chi, eta, data, batch, -data.charge, main_graph["edge_index"], main_graph["vector"])  # 这里charge 正负号是负的，所以这里要取负
+        pre_charge, lambda_sol = self.qeq_module.solve_qeq_linear_system_optimized(chi, eta, data, batch, data.charge, main_graph["edge_index"], main_graph["distance"])  # 这里charge 正负号是负的，所以这里要取负
 
         
         # pre_charge = torch.tanh(pre_charge) * self.qeq_module.charge_ub
@@ -1350,9 +1350,9 @@ class GemNetOC(BaseModel):
         # pre_charge = torch.clamp(pre_charge, min=-self.qeq_module.charge_ub, max=self.qeq_module.charge_ub)
         # total = torch.sum(pre_charge)
         # total_charge = scatter_det(pre_charge, batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules,)
-        pre_charge = self.qeq_module.predict_charge(node_feat=x_E)
+        # pre_charge = self.qeq_module.predict_charge(inputs=data)
         # 计算静电能和力
-        coul_energy = self.qeq_module.get_coulomb_energy_ewald(
+        coul_energy = self.qeq_module.get_coulomb_energy_ewald_batch(
             row=main_graph["edge_index"][0], 
             col=main_graph["edge_index"][1], 
             dij_vec=main_graph["vector"], 
@@ -1459,7 +1459,7 @@ class GemNetOC(BaseModel):
                 # F_t = self.force_scaler.calc_forces_and_update(corr_energy, pos)
                 # F_t_e = self.force_scaler.calc_forces_and_update(charge_energy, pos) # 测试使用
 
-                w = -self.force_scaler.calc_forces_and_update(mol_energy, data.charge)  # 这里需要好好考虑第一项
+                w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项
                 # w_short = self.force_scaler.calc_forces_and_update(mol_energy, data.charge)
                 # w_long = self.force_scaler.calc_forces_and_update(charge_energy, data.charge)
                 # w = w_short + w_long
@@ -1471,6 +1471,8 @@ class GemNetOC(BaseModel):
         # w_energy = scatter_det(w, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
         # w_energy = w_energy.squeeze(-1)  # (nMolecules,)
         outputs["w"] = w
+        # outputs["chi"] = chi
+        # outputs['eta'] = eta
             
 
         return outputs
