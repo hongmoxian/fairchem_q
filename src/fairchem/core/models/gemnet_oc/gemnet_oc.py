@@ -1285,7 +1285,8 @@ class GemNetOC(BaseModel):
         # subgraph["distance"] = subgraph["distance"][edge_mask]
         # Embedding block
         data.charge.requires_grad_(True)
-        charge_per_atom = -data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
+        data.charge = -data.charge
+        charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
         h = self.atom_emb(atomic_numbers)  # 83 * 128
         # (nAtoms, emb_size_atom)
         h = torch.cat([h, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
