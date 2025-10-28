@@ -67,7 +67,7 @@ def batch_to_atoms(batch):
 
 
 class OCPCalculator(Calculator):
-    implemented_properties: ClassVar[list[str]] = ["energy", "forces", 'bader', 'w', 'charge']
+    implemented_properties: ClassVar[list[str]] = ["energy", "forces", 'bader', 'w']
 
     def __init__(
         self,
