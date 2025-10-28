@@ -17,6 +17,8 @@ import numpy as np
 import torch
 import torch_geometric
 from tqdm import tqdm
+import pickle
+from ase.data import chemical_symbols
 
 from fairchem.core.common import distutils
 from fairchem.core.common.registry import registry
@@ -25,9 +27,7 @@ from fairchem.core.common.utils import cg_change_mat, check_traj_files, irreps_s
 from fairchem.core.modules.evaluator import Evaluator
 from fairchem.core.modules.scaling.util import ensure_fitted
 from fairchem.core.trainers.base_trainer import BaseTrainer
-
-if TYPE_CHECKING:
-    from torch_geometric.data import Batch
+from fairchem.core.models.gemnet_oc.qeq import QEqModule
 
 
 @registry.register_trainer("ocp")
@@ -184,8 +184,30 @@ class OCPTrainer(BaseTrainer):
                         "lr": self.scheduler.get_lr(),
                         "epoch": self.epoch,
                         "step": self.step,
+                        "w": out['w'].mean().item(),
+                        "q1": out['bader'][0].item(),
+                        "q2": out['bader'][1].item(),
+                        "q3": out['bader'][2].item(),
+                        "charge_energy": out['charge_energy'][0].item(),
                     }
                 )
+
+                # Add dynamic loss weights for common targets if present
+                try:
+                    energy_w = self._get_dynamic_loss_weight("energy", default=None)
+                    forces_w = self._get_dynamic_loss_weight("forces", default=None)
+                    bader_w = self._get_dynamic_loss_weight("bader", default=None)
+                    if energy_w is not None:
+                        log_dict.update({"lossw_energy": float(energy_w)})
+                    if forces_w is not None:
+                        log_dict.update({"lossw_forces": float(forces_w)})
+                    if bader_w is not None:
+                        log_dict.update({"lossw_bader": float(bader_w)})
+                except Exception:
+                    pass
+
+                log_dict.update(self.loss_dict)
+
                 if (
                     self.step % self.config["cmd"]["print_every"] == 0
                     and distutils.is_master()
@@ -228,7 +250,7 @@ class OCPTrainer(BaseTrainer):
                 if self.scheduler.scheduler_type == "ReduceLROnPlateau":
                     if self.step % eval_every == 0:
                         self.scheduler.step(
-                            metrics=val_metrics[primary_metric]["metric"],
+                            metrics=val_metrics["loss"]["metric"],
                         )
                 else:
                     self.scheduler.step()
@@ -257,6 +279,8 @@ class OCPTrainer(BaseTrainer):
         batch_size = batch.natoms.numel()
         num_atoms_in_batch = batch.natoms.sum()
         for target_key in self.output_targets:
+            if target_key == 'charge_energy' or target_key == 'lambda_sol' or target_key == 'charge':
+                continue
             ### Target property is a direct output of the model
             if target_key in out:
                 if isinstance(out[target_key], torch.Tensor):
@@ -310,8 +334,14 @@ class OCPTrainer(BaseTrainer):
             if self.output_targets[target_key]["level"] == "atom":
                 pred = pred.view(num_atoms_in_batch, -1)
             else:
-                pred = pred.view(batch_size, -1)
+                pred = pred.view(batch_size)
+
             outputs[target_key] = pred
+        outputs['bader'] = out.get('bader', None)
+        outputs['charge_energy'] = out.get('charge_energy', None)
+        outputs['w'] = out.get('w', None)
+        # outputs['lambda_sol'] = out.get('lambda_sol', None)
+        # outputs['qeq_force'] = out.get('qeq_force', None)
 
         return outputs
 
@@ -319,7 +349,7 @@ class OCPTrainer(BaseTrainer):
         batch_size = batch.natoms.numel()
         fixed = batch.fixed
         mask = fixed == 0
-
+        self.loss_dict = {}
         loss = []
         for loss_fn in self.loss_functions:
             target_name, loss_info = loss_fn
@@ -330,6 +360,15 @@ class OCPTrainer(BaseTrainer):
             natoms = batch.natoms
             natoms = torch.repeat_interleave(natoms, natoms)
 
+            if self.output_targets[target_name]["level"] == "atom":
+                if target_name == 'bader':
+                    # num_atoms_in_batch = natoms.numel()
+                    target = torch.tensor(target[0], dtype=torch.float32, device='cuda' if torch.cuda.is_available() else 'cpu').view(-1)
+                else:
+                    target = target.view(num_atoms_in_batch, -1)
+            else:
+                target = target.view(batch_size)
+
             if (
                 self.output_targets[target_name]["level"] == "atom"
                 and self.output_targets[target_name]["train_on_free_atoms"]
@@ -339,36 +378,200 @@ class OCPTrainer(BaseTrainer):
                 natoms = natoms[mask]
 
             num_atoms_in_batch = natoms.numel()
+            # if target_name == 'energy':
 
-            ### reshape accordingly: num_atoms_in_batch, -1 or num_systems_in_batch, -1
-            if self.output_targets[target_name]["level"] == "atom":
-                target = target.view(num_atoms_in_batch, -1)
-            else:
-                target = target.view(batch_size, -1)
+            #     data = pickle.load(open('avge0.pkl', 'rb'))
+            #     target = target - np.sum([data[i] for i in batch.atomic_numbers.to(torch.int16)])
 
-            # to keep the loss coefficient weights balanced we remove linear references
-            # subtract element references from target data
-            if target_name in self.elementrefs:
-                target = self.elementrefs[target_name].dereference(target, batch)
-            # normalize the targets data
-            if target_name in self.normalizers:
+            if self.normalizers.get(target_name, False):
                 target = self.normalizers[target_name].norm(target)
 
-            mult = loss_info["coefficient"]
-            loss.append(
-                mult
+            ### reshape accordingly: num_atoms_in_batch, -1 or num_systems_in_batch, -1
+
+
+            # Base static multiplier from config
+            base_mult = loss_info["coefficient"]
+            # Optional dynamic schedule override
+            mult = self._get_dynamic_loss_weight(target_name, default=base_mult)
+            self.loss_dict[target_name] = mult \
                 * loss_info["fn"](
                     pred,
                     target,
-                    natoms=batch.natoms,
+                    natoms=natoms,
+                    batch_size=batch_size,
                 )
+            
+            
+            loss.append(
+                self.loss_dict[target_name]
             )
+        calc_qeq = True
+        calc_charge = False
+        calc_val = False
+        en_dict = {
+            'H': 2.20, 'Li': 0.98, 'Be': 1.57, 'B': 2.04, 'C': 2.55, 'N': 3.04,
+            'O': 3.44, 'F': 3.98, 'Na': 0.93, 'Mg': 1.31, 'Al': 1.61, 'Si': 1.90,
+            'P': 2.19, 'S': 2.58, 'Cl': 3.16, 'K': 0.82, 'Ca': 1.00, 'Sc': 1.36,
+            'Ti': 1.54, 'V': 1.63, 'Cr': 1.66, 'Mn': 1.55, 'Fe': 1.83, 'Co': 1.88,
+            'Ni': 1.91, 'Cu': 1.90, 'Zn': 1.65, 'Ga': 1.81, 'Ge': 2.01, 'As': 2.18,
+            'Se': 2.48, 'Br': 2.96, 'Rb': 0.82, 'Sr': 0.95, 'Y': 1.22, 'Zr': 1.33,
+            'Nb': 1.59, 'Mo': 2.16, 'Tc': 1.91, 'Ru': 2.20, 'Rh': 2.28, 'Pd': 2.20,
+            'Ag': 1.93, 'Cd': 1.69, 'In': 1.78, 'Sn': 1.96, 'Sb': 2.05, 'Te': 2.12,
+            'I': 2.66, 'Cs': 0.79, 'Ba': 0.89, 'La': 1.10, 'Ce': 1.12, 'Pr': 1.13,
+            'Nd': 1.14, 'Pm': 1.13, 'Sm': 1.17, 'Eu': 1.20, 'Gd': 1.20, 'Tb': 1.22,
+            'Dy': 1.23, 'Ho': 1.24, 'Er': 1.24, 'Tm': 1.25, 'Yb': 1.26, 'Lu': 1.27,
+            'Hf': 1.30, 'Ta': 1.50, 'W': 2.36, 'Re': 1.93, 'Os': 2.18, 'Ir': 2.20,
+            'Pt': 2.28, 'Au': 2.54, 'Hg': 2.00, 'Tl': 1.62, 'Pb': 2.33, 'Bi': 2.02
+        }   
+            # if target_name == 'charge':
+        
+        def get_symbol_by_number(atomic_number):
+            return chemical_symbols[atomic_number]
+        
+        def electronegativity_rank_loss(output, atoms, en_dict):
+            from collections import defaultdict
 
+            charges = output.squeeze()  # 假设输出形状为 [N]
+            atom_groups = defaultdict(list)
+
+            # 构建原子索引映射：按元素分组
+            for i, atom in enumerate(atoms):
+                symbol = get_symbol_by_number(atom)
+                atom_groups[symbol].append(i)
+
+            avg_charges = []
+            en_values = []
+
+            # 对每个元素计算平均电荷，并获取电负性
+            for symbol, indices in atom_groups.items():
+                group_charges = charges[indices]  # 获取该元素的所有电荷值
+                avg_charge = torch.mean(group_charges)  # 平均电荷（保留梯度）
+                avg_charges.append(avg_charge)
+                en_values.append(en_dict[symbol])
+
+            # 转换为张量
+            avg_charges_tensor = torch.stack(avg_charges)
+            en_values_tensor = torch.tensor(en_values, device=charges.device)
+
+            # 排序并获取秩（rank）
+            _, charge_order = torch.sort(avg_charges_tensor, stable=True)
+            _, en_order = torch.sort(en_values_tensor, stable=True)
+
+            # 创建排序 -> 秩 的映射
+            charge_ranks = torch.argsort(charge_order, stable=True).float()
+            en_ranks = torch.argsort(en_order, stable=True).float()
+
+            # 计算 Spearman 相关系数
+            corr = torch.corrcoef(torch.stack([en_ranks, charge_ranks]))[0, 1]
+
+            # 损失定义为 1 - 相关系数
+            loss = 1.0 - corr
+
+            return loss
+        
+        if calc_qeq:
+        #     # eqemodel = self.model.qeq_module
+        #     # grad_outputs = torch.ones_like(out['charge_energy'])
+        #     # out['qeq_force'] = -1 * eqemodel.get_qeq_force(out['charge_energy'], out['pre_charge'], grad_outputs=grad_outputs)
+            
+        #     # loss.append(300 * out['qeq_force'])
+
+        #     # self.loss_dict['en_loss'] = 1000 * electronegativity_rank_loss(out['pre_charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
+        #     # loss.append(self.loss_dict['en_loss'])
+
+        #     # self.loss_dict['qeq_loss'] = out['qeq_force'] * 300
+        #     # loss.append()
+        #     # self.loss_dict['en_loss'] = electronegativity_rank_loss(out['charge'], batch.atomic_numbers.to(torch.int16), en_dict=en_dict)
+            loss_w = torch.mean(torch.abs(out['w'] - 4.44 - batch.mu ))
+            self.loss_dict['loss_w'] = loss_w * 200
+        #     loss.append(loss_w)
+            loss.append(loss_w * 200)
+            # self.loss_dict['loss_w'] = loss_w * 1000
         # Sanity check to make sure the compute graph is correct.
+        if calc_charge:
+            loss_charge = torch.mean(torch.abs(out['bader'] - torch.tensor(batch.bader[0], device=out['bader'].device, dtype=out['bader'].dtype)))  # 这里的bader是个数组
+            self.loss_dict['loss_charge'] = loss_charge * 100
+            loss.append(loss_charge * 100)
+
+        if calc_val:
+            min_var = 0.72
+            loss_var = (min_var - torch.var(out['bader']))**2 * 100
+            self.loss_dict['loss_var'] = loss_var
+            loss.append(loss_var)
+
+
         for lc in loss:
             assert hasattr(lc, "grad_fn")
 
         return sum(loss)
+
+    def _get_dynamic_loss_weight(self, target_name, default=None):
+        """
+        Compute a dynamic loss weight for a given target based on the configured
+        schedule in self.config["optim"]["loss_schedule"]. If no schedule for the
+        target exists, returns `default`.
+
+        Supported schedules (example under optim.loss_schedule):
+          energy: {type: "linear", start: 0.0, end: 1.0, start_step: 0, end_step: 10000}
+          forces: {type: "cosine", start: 1.0, end: 0.2, duration: 50000, start_step: 0}
+          energy: {type: "step", values: [[0, 0.0], [10000, 0.5], [50000, 1.0]]}
+          forces: {type: "exp", start: 1.0, gamma: 0.9995, start_step: 0}
+        """
+        sched_cfg = {}
+        final_config = {}
+        for config in self.config.get("loss_fns", {}):
+            final_config.update(config)
+        sched_cfg = final_config.get(target_name, {})
+        if not sched_cfg:
+            return default
+
+        step = int(getattr(self, "step", 0))
+        sched_type = str(sched_cfg.get("type", "linear")).lower()
+
+        def clip01(x):
+            return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+
+        if sched_type == "linear":
+            start = float(sched_cfg.get("start", default if default is not None else 1.0))
+            end = float(sched_cfg.get("end", start))
+            s0 = int(sched_cfg.get("start_step", 0))
+            s1 = int(sched_cfg.get("end_step", s0))
+            if s1 <= s0:
+                return end
+            t = clip01((step - s0) / float(max(1, s1 - s0)))
+            return (1 - t) * start + t * end
+
+        if sched_type == "cosine":
+            import math
+            start = float(sched_cfg.get("start", default if default is not None else 1.0))
+            end = float(sched_cfg.get("end", start))
+            s0 = int(sched_cfg.get("start_step", 0))
+            dur = int(sched_cfg.get("duration", 1))
+            t = clip01((step - s0) / float(max(1, dur)))
+            return end + 0.5 * (start - end) * (1 + math.cos(math.pi * t))
+
+        if sched_type == "step":
+            # values: list of [at_step, value], sorted by at_step
+            values = sched_cfg.get("values", [])
+            if not values:
+                return default
+            current = float(values[0][1])
+            for at, val in values:
+                if step >= int(at):
+                    current = float(val)
+                else:
+                    break
+            return current
+
+        if sched_type in ("exp", "exponential"):
+            start = float(sched_cfg.get("start", default if default is not None else 1.0))
+            gamma = float(sched_cfg.get("gamma", 1.0))
+            s0 = int(sched_cfg.get("start_step", 0))
+            k = max(0, step - s0)
+            return start * (gamma ** k)
+
+        # Fallback
+        return default
 
     def _compute_metrics(self, out, batch, evaluator, metrics=None):
         if metrics is None:
@@ -393,7 +596,12 @@ class OCPTrainer(BaseTrainer):
 
         targets = {}
         for target_name in self.output_targets:
-            target = batch[target_name]
+            if target_name == "charge" or target_name == "bader":
+                continue
+            if target_name == "w":
+                target = batch.mu + 4.44
+            else:
+                target = batch[target_name]
             num_atoms_in_batch = batch.natoms.sum()
 
             if (
@@ -408,7 +616,7 @@ class OCPTrainer(BaseTrainer):
             if self.output_targets[target_name]["level"] == "atom":
                 target = target.view(num_atoms_in_batch, -1)
             else:
-                target = target.view(batch_size, -1)
+                target = target.view(batch_size)
 
             out[target_name] = self._denorm_preds(target_name, out[target_name], batch)
             targets[target_name] = target
@@ -416,14 +624,7 @@ class OCPTrainer(BaseTrainer):
         targets["natoms"] = natoms
         out["natoms"] = natoms
 
-        # add all other tensor properties too, but filter out the ones that are changed above
-        for key in filter(
-            lambda k: k not in [*list(self.output_targets.keys()), "natoms"]
-            and isinstance(batch[k], torch.Tensor),
-            batch.keys(),
-        ):
-            targets[key] = batch[key].to(self.device)
-            out[key] = targets[key]
+        
 
         return evaluator.eval(out, targets, prev_metrics=metrics)
 
@@ -472,8 +673,14 @@ class OCPTrainer(BaseTrainer):
             with torch.autocast("cuda", enabled=self.scaler is not None):
                 out = self._forward(batch)
 
-            for target_key in self.config["outputs"]:
-                pred = self._denorm_preds(target_key, out[target_key], batch)
+            for target_key in self.config['outputs']:
+                pred = out[target_key]
+                if self.normalizers.get(target_key, False):
+                    pred = self.normalizers[target_key].denorm(pred)
+                
+                # if target_key == "energy":
+                #     data = pickle.load(open('avge0.pkl', 'rb'))
+                #     pred = pred + np.sum([data[i] for i in batch.atomic_numbers.to(torch.int16)])
 
                 if per_image:
                     ### Save outputs in desired precision, default float16
