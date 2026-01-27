@@ -6,7 +6,6 @@ LICENSE file in the root directory of this source tree.
 
 from __future__ import annotations
 
-from ast import main
 import logging
 import typing
 
@@ -43,12 +42,9 @@ from .utils import (
     repeat_blocks,
 )
 
-# from .ele_potential import ElectrostaticEnergy
-from .qeq import QEqModule
-import torch.nn as nn
-import jax
-import jax.numpy as jnp
-from jaxopt import LBFGS
+if typing.TYPE_CHECKING:
+    from torch_geometric.data.batch import Batch
+
 
 @registry.register_model("gemnet_oc")
 class GemNetOC(nn.Module, GraphModelMixin):
@@ -215,7 +211,6 @@ class GemNetOC(nn.Module, GraphModelMixin):
         cutoff_qint: float | None = None,
         cutoff_aeaint: float | None = None,
         cutoff_aint: float | None = None,
-        cutoff_q: float | None = None,
         max_neighbors: int = 50,
         max_neighbors_qint: int | None = None,
         max_neighbors_aeaint: int | None = None,
@@ -269,7 +264,6 @@ class GemNetOC(nn.Module, GraphModelMixin):
             rbf_spherical = rbf
 
         self.set_cutoffs(cutoff, cutoff_qint, cutoff_aeaint, cutoff_aint)
-        self.cutoff_q = cutoff_q
         self.set_max_neighbors(
             max_neighbors,
             max_neighbors_qint,
@@ -302,13 +296,8 @@ class GemNetOC(nn.Module, GraphModelMixin):
         # Embedding blocks
         self.atom_emb = AtomEmbedding(emb_size_atom, num_elements)
         self.edge_emb = EdgeEmbedding(
-            emb_size_atom + 1, num_radial, emb_size_edge, activation=activation
-        )    # (nEdges, emb_size)
-        self.lr_cutoff = self.cutoff + 6
-        # self.get_q = ElectrostaticEnergy(
-        #         cuton=self.cutoff + 2,
-        #         cutoff=self.lr_cutoff,
-        #     )
+            emb_size_atom, num_radial, emb_size_edge, activation=activation
+        )
 
         # Interaction Blocks
         int_blocks = []
@@ -369,19 +358,7 @@ class GemNetOC(nn.Module, GraphModelMixin):
             for _ in range(num_global_out_layers)
         ]
         self.out_mlp_E = torch.nn.Sequential(*out_mlp_E)
-        # self.out_energy = Dense(emb_size_atom + 1, num_targets, bias=True, activation=None)
-        self.out_energy = nn.Sequential(
-        nn.Linear(emb_size_atom, 128),
-        nn.SiLU(),
-        nn.Linear(128, 1)
-    )
-
-        self.out_w = nn.Sequential(
-            nn.Linear(emb_size_atom + 1, 128),
-            nn.SiLU(),
-            nn.Linear(128, 1)
-        )
-        # self.out_q = Dense(emb_size_atom, 1, bias=False, activation=None)
+        self.out_energy = Dense(emb_size_atom, 1, bias=False, activation=None)
         if direct_forces:
             out_mlp_F = [
                 Dense(
@@ -400,16 +377,11 @@ class GemNetOC(nn.Module, GraphModelMixin):
             self.out_forces = Dense(emb_size_edge, 1, bias=False, activation=None)
 
         out_initializer = get_initializer(output_init)
-        # self.out_energy.reset_parameters(out_initializer)
-        # self.out_q.reset_parameters(out_initializer)
+        self.out_energy.reset_parameters(out_initializer)
         if direct_forces:
             self.out_forces.reset_parameters(out_initializer)
 
         load_scales_compat(self, scale_file)
-
-        # 将QEqModule作为模型的一个组件
-        self.qeq_module = QEqModule()
-
 
     def set_cutoffs(self, cutoff, cutoff_qint, cutoff_aeaint, cutoff_aint):
         self.cutoff = cutoff
@@ -1232,8 +1204,6 @@ class GemNetOC(nn.Module, GraphModelMixin):
             trip_idx_e2a,
             quad_idx,
         ) = self.get_graphs_and_indices(data)
-
-        # q_graph = self.generate_graph(data=data, cutoff=self.cutoff_q, max_neighbors=self.max_neighbors, use_pbc=self.use_pbc, otf_graph=self.otf_graph)
         _, idx_t = main_graph["edge_index"]
 
         (
@@ -1257,27 +1227,11 @@ class GemNetOC(nn.Module, GraphModelMixin):
             num_atoms=num_atoms,
         )
 
-        # q_graph = self.generate_graph(data=data, cutoff=self.lr_cutoff, max_neighbors=self.max_neighbors, use_pbc=self.use_pbc, otf_graph=self.otf_graph)
-
-        # subgraph = {
-        #     "edge_index": q_graph[0],
-        #     "distance": q_graph[1],
-        #     "cell_offset": q_graph[3],
-        #     "num_neighbors": q_graph[5],
-        # }
-        
-        # edge_mask = subgraph["distance"] >= self.cutoff
-        # subgraph["edge_index"] = subgraph["edge_index"][:, edge_mask]
-        # subgraph["distance"] = subgraph["distance"][edge_mask]
         # Embedding block
-        data.charge.requires_grad_(True)
-        data.charge = -data.charge
-        charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
-        h = self.atom_emb(atomic_numbers)  # 83 * 128
-        # (nAtoms, emb_size_atom)
-        h = torch.cat([h, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
-        m = self.edge_emb(h, basis_rad_raw, main_graph["edge_index"])  # basis_rad_raw 2维
-        # (nEdges, emb_size_edge) 
+        h = self.atom_emb(atomic_numbers)# (nAtoms, emb_size_atom)
+        
+        m = self.edge_emb(h, basis_rad_raw, main_graph["edge_index"])
+        # (nEdges, emb_size_atom * 2)
 
         x_E, x_F = self.out_blocks[0](h, m, basis_output, idx_t)
         # (nAtoms, emb_size_atom), (nEdges, emb_size_edge)
@@ -1309,102 +1263,27 @@ class GemNetOC(nn.Module, GraphModelMixin):
             xs_E.append(x_E)
             xs_F.append(x_F)
 
-        
-        # 1. 原子特征
-        x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1)) # (nAtoms, emb_size_atom)
-        # 2. 将charge扩展到每个原子
-        # charge_per_atom = data.charge[data.batch].unsqueeze(-1)  # (nAtoms, 1)
-        # 3. 拼接charge到原子特征
-        # x_E_with_charge = torch.cat([x_E, charge_per_atom], dim=-1)  # (nAtoms, emb_size_atom+1)
-        # 4. 预测原子能量
-        atom_energy = self.out_energy(x_E)  # (nAtoms, 1)
-        # 5. 聚合为分子能量
-        nMolecules = torch.max(data.batch) + 1
-        mol_energy = scatter_det(atom_energy, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
-        mol_energy = mol_energy.squeeze(-1)  # (nMolecules,)
-        
-        # 使用模型的x_E来预测电荷
-        chi, eta = self.qeq_module._initialize_weights(x_E)
-        # initial_charge = self.qeq_module.predict_charge(data)
-
-        # pre_charge, lambda_sol = self.qeq_module.solve_qeq(initial_charge=initial_charge, chi=chi, J=eta, inputs=data, dij_vec=main_graph["vector"], row=main_graph["edge_index"][0], col=main_graph["edge_index"][1], Q_total=-data.charge, max_iter=1000)
-        pre_charge, lambda_sol = self.qeq_module.solve_qeq_linear_system_optimized(chi, eta, data, batch, data.charge, main_graph["edge_index"], main_graph["distance"])  # 这里charge 正负号是负的，所以这里要取负
-
-        
-        # pre_charge = torch.tanh(pre_charge) * self.qeq_module.charge_ub
-        # total = torch.sum(pre_charge)
-        # pre_charge = torch.clamp(pre_charge, min=-self.qeq_module.charge_ub, max=self.qeq_module.charge_ub)
-        # total = torch.sum(pre_charge)
-        # total_charge = scatter_det(pre_charge, batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules,)
-        # pre_charge = self.qeq_module.predict_charge(inputs=data)
-        # 计算静电能和力
-        coul_energy = self.qeq_module.get_coulomb_energy_ewald_batch(
-            row=main_graph["edge_index"][0], 
-            col=main_graph["edge_index"][1], 
-            dij_vec=main_graph["vector"], 
-            pred_charge=pre_charge, 
-            inputs=data
-        )
-
-
-        nMolecules = torch.max(batch) + 1
-        # electronegativity_energy = self.qeq_module.get_electronegativity_energy(
-        #     pred_electronegativity=chi, 
-        #     pred_electronegativity_hardness=eta, 
-        #     pred_charge=pre_charge, 
-        #     inputs=data, 
-        #     nmols=nMolecules
-        # )   # 总能里面不要这一项
-        
-        # 合并所有能量项
-        charge_energy = coul_energy
-        # total_energy = E_t + charge_energy
-
+        # Global output block for final predictions
+        x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1))
         if self.direct_forces:
             x_F = self.out_mlp_F(torch.cat(xs_F, dim=-1))
-        with torch.cuda.amp.autocast(False):
-            # E_t = self.out_energy(E_t.float())  # 256 * 1
+        with torch.autocast("cuda", enabled=False):
+            E_t = self.out_energy(x_E.float())
             if self.direct_forces:
                 F_st = self.out_forces(x_F.float())
-            # q = self.out_q(x_E.float()).squeeze(-1)
-        # q = q - (torch.sum(q) - 0) / q.numel()
-        
-        # if self.extensive:
-        #     E_t = scatter_det(
-        #         x_E, batch, dim=0, dim_size=nMolecules, reduce="add"
-        #     )  # (nMolecules, num_targets)
-        # else:
-        #     E_t = scatter_det(
-        #         x_E, batch, dim=0, dim_size=nMolecules, reduce="mean"
-        #     )  # (nMolecules, num_targets)
 
-        # E_t = E_t.squeeze(1)  # (num_molecules)
-        # E_t = E_t * 0.01
-        # cont_feature = torch.cat([E_t, data.charge.unsqueeze(-1)], dim=-1)  # (nMolecules, emb_size_atom+1)
-        # E_t = self.out_energy(cont_feature.float()).squeeze(-1)
-         # (nMolecules,)
-        # grad_outputs = [ torch.ones_like(charge_energy) ]
-        # main_graph['vector'].requires_grad_(True)
-        # qeq_force = self.qeq_module.get_qeq_force(charge_energy=charge_energy, inputs=main_graph, row=main_graph['edge_index'][0], col=main_graph['edge_index'][1], natoms=num_atoms, grad_outputs=grad_outputs)
-        # loss_qeq = torch.mean(torch.square(qeq_force))
-        
-        outputs = {"charge_energy": charge_energy}
-        # outputs["qeq_force"] = loss_qeq
-        outputs['bader'] = pre_charge
-        # outputs['lambda_sol'] = lambda_sol
-        # E_q = self.get_q(
-        #         num_atoms, q, subgraph["distance"], subgraph['edge_index'][0], subgraph['edge_index'][1], pos, data.cell, nMolecules, batch
-        #     )
-        # E_q = scatter_det(
-        #         E_q, batch, dim=0, dim_size=nMolecules, reduce="add"
-        #     )
-        outputs['energy'] = mol_energy + charge_energy
-        # outputs['charge'] = pre_charge
-        # outputs['pre_charge'] = pre_charge
+        nMolecules = torch.max(batch) + 1
+        if self.extensive:
+            E_t = scatter_det(
+                E_t, batch, dim=0, dim_size=nMolecules, reduce="add"
+            )  # (nMolecules, 1)
+        else:
+            E_t = scatter_det(
+                E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
+            )  # (nMolecules, 1)
 
-        # w = self.out_w(x_E_with_charge)
-        # outputs['w'] = w
-        # outputs["charge"] = q.view(-1)
+        E_t = E_t.squeeze(1)  # (num_molecules)
+        outputs = {"energy": E_t}
         if self.regress_forces:
             if self.direct_forces:
                 if self.forces_coupled:  # enforce F_st = F_ts
@@ -1434,32 +1313,11 @@ class GemNetOC(nn.Module, GraphModelMixin):
                     reduce="add",
                 )  # (nAtoms, 1, 3)
             else:
-                F_t = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, pos)  # 这里需要好好考虑第一项
-                # F_1 = self.force_scaler.calc_forces_and_update(mol_energy, pos)
-                # F_2 = self.force_scaler.calc_forces_and_update(charge_energy, pos)
-                # F_3 = self.force_scaler.calc_forces_and_update(electronegativity_energy, pos)
-                # F_4 = self.force_scaler.calc_forces_and_update(coul_energy, pos)
-                # F1 = self.force_scaler.calc_forces_and_update(real_space, pos)
-                # F2 = self.force_scaler.calc_forces_and_update(reciprocal_space, pos)
-                # F3 = self.force_scaler.calc_forces_and_update(self_energy, pos)
-                # F_t = self.force_scaler.calc_forces_and_update(corr_energy, pos)
-                # F_t_e = self.force_scaler.calc_forces_and_update(charge_energy, pos) # 测试使用
+                F_t = self.force_scaler.calc_forces_and_update(E_t, pos)
 
-                w = self.force_scaler.calc_forces_and_update(mol_energy + charge_energy, data.charge)  # 这里需要好好考虑第一项
-                # w_short = self.force_scaler.calc_forces_and_update(mol_energy, data.charge)
-                # w_long = self.force_scaler.calc_forces_and_update(charge_energy, data.charge)
-                # w = w_short + w_long
-                # f_q = self.force_scaler.calc_forces_and_update(outputs["charge_energy"].sum(), pre_charge)
             F_t = F_t.squeeze(1)  # (num_atoms, 3)
 
-        outputs["forces"] = F_t
-        # w = self.out_w(x_E_with_charge)
-        # w_energy = scatter_det(w, data.batch, dim=0, dim_size=nMolecules, reduce="add")  # (nMolecules, 1)
-        # w_energy = w_energy.squeeze(-1)  # (nMolecules,)
-        outputs["w"] = w
-        # outputs["chi"] = chi
-        # outputs['eta'] = eta
-            
+            outputs["forces"] = F_t
 
         return outputs
 

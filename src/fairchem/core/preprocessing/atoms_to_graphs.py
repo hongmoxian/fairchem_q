@@ -209,10 +209,7 @@ class AtomsToGraphs:
 
         # initialized to torch.zeros(natoms) if tags missing.
         # https://wiki.fysik.dtu.dk/ase/_modules/ase/atoms.html#Atoms.get_tags
-        tags = torch.Tensor(atoms.get_tags())
-        charge = torch.Tensor(atoms.info.get("charge", 0))
-
-        # print('charge', charge)
+        tags = torch.tensor(atoms.get_tags(), dtype=torch.int)
 
         # put the minimum data in torch geometric data object
         data = Data(
@@ -221,7 +218,6 @@ class AtomsToGraphs:
             atomic_numbers=atomic_numbers,
             natoms=natoms,
             tags=tags,
-            charge=charge,
         )
 
         # Optionally add a systemid (sid) to the object

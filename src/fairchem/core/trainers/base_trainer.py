@@ -236,52 +236,18 @@ class BaseTrainer(ABC):
             timestamp_str += "-" + suffix
         return timestamp_str
 
-    def load(self) -> None:
-        pretrain = False
+    def load(self, inference_only: bool) -> None:
         self.load_seed_from_config()
         self.load_logger()
         self.load_task()
         self.load_model()
-        self.load_loss()
-        self.load_optimizer()
-        self.load_extras()
-        if pretrain:
-            self.load_checkpoint_finetune(checkpoint_path=None)
 
-
-        # self.k = nn.Parameter(torch.tensor(0.1), requires_grad=True)
-    def load_checkpoint_finetune(self, checkpoint_path):
-        import os
-        if os.path.exists("/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/k-co2/q-no-mean/charge-v3/charge-v4/checkpoints/2025-10-17-11-52-32/checkpoint.pt"):
-            self.pretrain = True
-            # self.qeq_module = torch.load(self.config["qeq_model_path"])
-            model = torch.load("/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/k-co2/q-no-mean/charge-v3/charge-v4/checkpoints/2025-10-17-11-52-32/checkpoint.pt", map_location=torch.device('cuda') if torch.cuda.is_available() else 'cpu')
-            # self.electronegativity_mlp.load_state_dict(model["chi"])
-            # self.hardness_mlp.load_state_dict(model["eta"])
-
-            # for param in self.electronegativity_mlp.parameters():
-            #     param.requires_grad = False
-            # for param in self.hardness_mlp.parameters():
-            #     param.requires_grad = False
-            # name2chi_params = model["name2chi_params"] # 假设这是您之前保存的参数字典
-            # for key, tensor_value in name2chi_params.items():
-            #     if key in self.name2chi:
-            #         with torch.no_grad():
-            #             self.name2chi[key].data.copy_(tensor_value)
-
-            # # 2. 【新增】遍历 name2chi 字典，冻结所有参数
-            # for param in self.name2chi.values():
-            #     param.requires_grad = False
-            self.model.load_state_dict(model, strict=False)
-            for name, param in self.model.named_parameters():
-                if 'out_energy' in name:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-            
-            print("load checkpoint finetune success")
-            print("trainable parameters:", sum(p.numel() for p in self.model.parameters() if p.requires_grad))
-            print("total parameters:", sum(p.numel() for p in self.model.parameters()))
+        if inference_only is False:
+            self.load_datasets()
+            self.load_references_and_normalizers()
+            self.load_loss()
+            self.load_optimizer()
+            self.load_extras()
 
         if self.config["optim"].get("load_datasets_and_model_then_exit", False):
             sys.exit(0)

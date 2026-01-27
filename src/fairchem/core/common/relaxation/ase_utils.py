@@ -111,7 +111,9 @@ def batch_to_atoms(
 
 
 class OCPCalculator(Calculator):
-    implemented_properties: ClassVar[list[str]] = ["energy", "forces", 'bader', 'w']
+    """ASE based calculator using an OCP model"""
+
+    _reshaped_props = ASE_PROP_RESHAPE
 
     def __init__(
         self,
@@ -295,16 +297,3 @@ class OCPCalculator(Calculator):
             if key in OCPCalculator._reshaped_props:
                 _pred = _pred.reshape(OCPCalculator._reshaped_props.get(key)).squeeze()
             self.results[key] = _pred
-
-    def get_charge(self, atoms,):
-        self.calculate(atoms, properties=['charge'], system_changes=['positions', 'numbers', 'cell'])
-        return self.results['charge']
-    
-    def get_w(self, atoms,):
-        self.calculate(atoms, properties=['w'], system_changes=['positions', 'numbers', 'cell'])
-        return self.results['w']
-
-    def get_energy(self, atoms,):
-        self.calculate(atoms, properties=['energy'], system_changes=['positions', 'numbers', 'cell'])
-        return self.results['energy']
-
