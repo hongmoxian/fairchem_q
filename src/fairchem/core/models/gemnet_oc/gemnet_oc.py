@@ -204,6 +204,7 @@ class GemNetOC(nn.Module, GraphModelMixin):
         num_global_out_layers: int = 2,
         regress_forces: bool = True,
         direct_forces: bool = False,
+        regress_hessian: bool = False,
         use_pbc: bool = True,
         use_pbc_single: bool = False,
         scale_backprop_forces: bool = False,
@@ -258,6 +259,7 @@ class GemNetOC(nn.Module, GraphModelMixin):
         self.edge_atom_interaction = edge_atom_interaction
         self.atom_interaction = atom_interaction
         self.quad_interaction = quad_interaction
+        self.regress_hessian = regress_hessian
         self.qint_tags = torch.tensor(qint_tags)
         self.otf_graph = otf_graph
         if not rbf_spherical:
@@ -1318,6 +1320,12 @@ class GemNetOC(nn.Module, GraphModelMixin):
             F_t = F_t.squeeze(1)  # (num_atoms, 3)
 
             outputs["forces"] = F_t
+
+        if self.regress_hessian:
+            hessian = self.force_scaler.compute_hessian_masked(
+                forces=F_t, data=data, training=self.training
+            )
+            outputs["hessian"] = hessian
 
         return outputs
 
