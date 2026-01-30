@@ -204,7 +204,7 @@ class GemNetOC(nn.Module, GraphModelMixin):
         num_global_out_layers: int = 2,
         regress_forces: bool = True,
         direct_forces: bool = False,
-        regress_hessian: bool = False,
+        regress_hessian: bool = True,
         use_pbc: bool = True,
         use_pbc_single: bool = False,
         scale_backprop_forces: bool = False,
@@ -1322,10 +1322,11 @@ class GemNetOC(nn.Module, GraphModelMixin):
             outputs["forces"] = F_t
 
         if self.regress_hessian:
-            hessian = self.force_scaler.compute_hessian_masked(
-                forces=F_t, data=data, training=self.training
+            hessian, row_mask = self.force_scaler.compute_hessian_masked(
+                forces=F_t, data=data, training=self.training, max_samples=10
             )
             outputs["hessian"] = hessian
+            outputs["hessian_row_mask"] = row_mask
 
         return outputs
 

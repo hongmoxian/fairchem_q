@@ -321,6 +321,7 @@ class OCPTrainer(BaseTrainer):
         mask = fixed == 0
 
         loss = []
+        calc_hessian = True
         for loss_fn in self.loss_functions:
             target_name, loss_info = loss_fn
 
@@ -363,7 +364,28 @@ class OCPTrainer(BaseTrainer):
                     natoms=batch.natoms,
                 )
             )
+        if calc_hessian:
+            row_mask = out["row_mask"]
+            pred_hessian = out["hessian"]
+            target_hessian = batch.hessian
+            n_atoms = batch.natoms.numel()
 
+            # 3. 计算 Masked Loss
+            # 只计算 row_mask=1 的那些行的误差
+            # 维度匹配: (3N, 3N) - (3N, 3N)
+            diff = pred_hessian - target_hessian
+
+            # 平方误差 * 行掩码 (广播机制: [3N, 3N] * [3N, 1])
+            # 这样未计算的行（mask=0）误差自动变为 0，不会影响梯度
+            masked_sq_error = (diff ** 2) * row_mask
+
+            # 4. 求平均
+            # 除以采样的元素总数，而不是矩阵总元素数
+            # row_mask.sum() 是采样的行数， * (3N) 是每行的元素数(或者只算非固定的列)
+            # 简单做法：除以掩码后的非零元素个数 + epsilon 防止除零
+            loss_hessian = masked_sq_error.sum() / (row_mask.sum() * 3 * n_atoms + 1e-8)
+
+        loss.append(loss_hessian)
         # Sanity check to make sure the compute graph is correct.
         for lc in loss:
             assert hasattr(lc, "grad_fn")
@@ -394,7 +416,6 @@ class OCPTrainer(BaseTrainer):
         targets = {}
         for target_name in self.output_targets:
             target = batch[target_name]
-            num_atoms_in_batch = batch.natoms.sum()
 
             if (
                 self.output_targets[target_name]["level"] == "atom"
