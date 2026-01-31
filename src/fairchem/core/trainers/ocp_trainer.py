@@ -163,7 +163,7 @@ class OCPTrainer(BaseTrainer):
                 # Forward, loss, backward.
                 with torch.autocast("cuda", enabled=self.scaler is not None):
                     out = self._forward(batch)
-                    loss = self._compute_loss(out, batch)
+                    loss, loss_hessian = self._compute_loss(out, batch)
 
                 # Compute metrics.
                 self.metrics = self._compute_metrics(
@@ -173,6 +173,8 @@ class OCPTrainer(BaseTrainer):
                     self.metrics,
                 )
                 self.metrics = self.evaluator.update("loss", loss.item(), self.metrics)
+                if loss_hessian is not None:
+                    self.metrics = self.evaluator.update("loss_hessian", loss_hessian.item(), self.metrics)
 
                 loss = self.scaler.scale(loss) if self.scaler else loss
                 self._backward(loss)
@@ -307,11 +309,24 @@ class OCPTrainer(BaseTrainer):
 
             ### not all models are consistent with the output shape
             ### reshape accordingly: num_atoms_in_batch, -1 or num_systems_in_batch, -1
-            if self.output_targets[target_key]["level"] == "atom":
+            if self.output_targets[target_key]["level"] == "atom" and target_key != 'hessian':
                 pred = pred.view(num_atoms_in_batch, -1)
+            elif self.output_targets[target_key]["level"] == "atom" and target_key == 'hessian':
+                pred = pred
             else:
                 pred = pred.view(batch_size, -1)
             outputs[target_key] = pred
+        if hasattr(batch, 'hessian'):
+        # 有hessian数据，mask设为1
+            n_atoms = batch.natoms.sum()
+            hessian_size = 3 * n_atoms
+            outputs["row_mask"] = torch.ones((hessian_size, 1), device=self.device, dtype=out["hessian"].dtype)
+        else:
+            # 没有hessian数据，mask设为0
+            n_atoms = batch.natoms.sum()
+            hessian_size = 3 * n_atoms
+            outputs["row_mask"] = torch.zeros((hessian_size, 1), device=self.device, 
+                                            dtype=out.get("hessian", torch.zeros(1, device=self.device)).dtype)
 
         return outputs
 
@@ -319,9 +334,10 @@ class OCPTrainer(BaseTrainer):
         batch_size = batch.natoms.numel()
         fixed = batch.fixed
         mask = fixed == 0
+        loss_hessian = None
 
         loss = []
-        calc_hessian = True
+        # calc_hessian = True
         for loss_fn in self.loss_functions:
             target_name, loss_info = loss_fn
 
@@ -335,15 +351,20 @@ class OCPTrainer(BaseTrainer):
                 self.output_targets[target_name]["level"] == "atom"
                 and self.output_targets[target_name]["train_on_free_atoms"]
             ):
-                target = target[mask]
-                pred = pred[mask]
-                natoms = natoms[mask]
+                if target_name != 'hessian':  # Hessian不应用free atom mask
+                    target = target[mask]
+                    pred = pred[mask]
+                    natoms = natoms[mask]
+
+
+
 
             num_atoms_in_batch = natoms.numel()
 
             ### reshape accordingly: num_atoms_in_batch, -1 or num_systems_in_batch, -1
             if self.output_targets[target_name]["level"] == "atom":
-                target = target.view(num_atoms_in_batch, -1)
+                if target_name != 'hessian':
+                    target = target.view(num_atoms_in_batch, -1)
             else:
                 target = target.view(batch_size, -1)
 
@@ -356,41 +377,50 @@ class OCPTrainer(BaseTrainer):
                 target = self.normalizers[target_name].norm(target)
 
             mult = loss_info["coefficient"]
-            loss.append(
-                mult
-                * loss_info["fn"](
-                    pred,
-                    target,
-                    natoms=batch.natoms,
+            if target_name == 'hessian':
+            # 检查当前批次是否有hessian数据
+                if hasattr(batch, 'hessian'):
+                    # 当前批次有hessian数据，使用实际值
+                    row_mask = out["row_mask"]
+                    pred_hessian = out["hessian"]
+                    target_hessian = batch.hessian
+                else:
+                    # 当前批次没有hessian数据，创建全零矩阵和零mask
+                    n_atoms = batch.natoms.sum()
+                    hessian_size = 3 * n_atoms
+                    target_hessian = torch.zeros((hessian_size, hessian_size), device=self.device, dtype=pred.dtype)
+                    pred_hessian = torch.zeros((hessian_size, hessian_size), device=self.device, dtype=pred.dtype)
+                    # 创建对应大小的mask，全部为0
+                    row_mask = torch.zeros((hessian_size, 1), device=self.device, dtype=pred.dtype)
+                n_atoms = batch.natoms.numel()
+
+                # 计算Masked Loss
+                # 只计算 row_mask=1 的那些行的误差
+                diff = pred_hessian - target_hessian
+
+                # 平方误差 * 行掩码
+                masked_sq_error = (diff ** 2) * row_mask
+
+                # 求平均，除以采样的元素总数
+                loss_hessian = masked_sq_error.sum() / (row_mask.sum() * 3 * n_atoms + 1e-8)
+                
+                # 应用系数
+                loss_hessian = mult * loss_hessian
+                loss.append(loss_hessian)
+            else:
+                loss.append(
+                    mult
+                    * loss_info["fn"](
+                        pred,
+                        target,
+                        natoms=batch.natoms,
+                    )
                 )
-            )
-        if calc_hessian:
-            row_mask = out["row_mask"]
-            pred_hessian = out["hessian"]
-            target_hessian = batch.hessian
-            n_atoms = batch.natoms.numel()
-
-            # 3. 计算 Masked Loss
-            # 只计算 row_mask=1 的那些行的误差
-            # 维度匹配: (3N, 3N) - (3N, 3N)
-            diff = pred_hessian - target_hessian
-
-            # 平方误差 * 行掩码 (广播机制: [3N, 3N] * [3N, 1])
-            # 这样未计算的行（mask=0）误差自动变为 0，不会影响梯度
-            masked_sq_error = (diff ** 2) * row_mask
-
-            # 4. 求平均
-            # 除以采样的元素总数，而不是矩阵总元素数
-            # row_mask.sum() 是采样的行数， * (3N) 是每行的元素数(或者只算非固定的列)
-            # 简单做法：除以掩码后的非零元素个数 + epsilon 防止除零
-            loss_hessian = masked_sq_error.sum() / (row_mask.sum() * 3 * n_atoms + 1e-8)
-
-        loss.append(loss_hessian)
-        # Sanity check to make sure the compute graph is correct.
+        
         for lc in loss:
             assert hasattr(lc, "grad_fn")
 
-        return sum(loss)
+        return sum(loss), loss_hessian if loss_hessian is not None else None
 
     def _compute_metrics(self, out, batch, evaluator, metrics=None):
         if metrics is None:
@@ -420,14 +450,16 @@ class OCPTrainer(BaseTrainer):
             if (
                 self.output_targets[target_name]["level"] == "atom"
                 and self.output_targets[target_name]["eval_on_free_atoms"]
-            ):
+            ) and target_name != 'hessian':
                 target = target[mask]
                 out[target_name] = out[target_name][mask]
                 num_atoms_in_batch = natoms.sum()
 
             ### reshape accordingly: num_atoms_in_batch, -1 or num_systems_in_batch, -1
-            if self.output_targets[target_name]["level"] == "atom":
+            if self.output_targets[target_name]["level"] == "atom" and target_name != 'hessian':
                 target = target.view(num_atoms_in_batch, -1)
+            elif self.output_targets[target_name]["level"] == "atom" and target_name == 'hessian':
+                target = target
             else:
                 target = target.view(batch_size, -1)
 

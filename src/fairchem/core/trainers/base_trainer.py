@@ -890,11 +890,13 @@ class BaseTrainer(ABC):
             with torch.autocast("cuda", enabled=self.scaler is not None):
                 batch.to(self.device)
                 out = self._forward(batch)
-            loss = self._compute_loss(out, batch)
+            loss, loss_hessian = self._compute_loss(out, batch)
 
             # Compute metrics.
             metrics = self._compute_metrics(out, batch, evaluator, metrics)
             metrics = evaluator.update("loss", loss.item(), metrics)
+            if loss_hessian is not None:
+                metrics = evaluator.update("loss_hessian", loss_hessian.item(), metrics)
 
         metrics = self._aggregate_metrics(metrics)
 

@@ -1326,7 +1326,7 @@ class GemNetOC(nn.Module, GraphModelMixin):
                 forces=F_t, data=data, training=self.training, max_samples=10
             )
             outputs["hessian"] = hessian
-            outputs["hessian_row_mask"] = row_mask
+            outputs["row_mask"] = row_mask
 
         return outputs
 
