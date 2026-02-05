@@ -117,24 +117,35 @@ def setup(config) -> None:
         )
     else:
         if not os.environ.get("MASTER_ADDR"):
-            assert (
-                config["world_size"] == 1
-            ), "Can only setup master address and port at this point for a single rank, otherwise we assume the processes and the comm addr/port have already been setup"
-            setup_env_local()
-        config["local_rank"] = int(os.environ.get("LOCAL_RANK"))
-        if config.get("use_cuda_visibile_devices"):
-            assign_device_for_local_rank(config["cpu"], config["local_rank"])
-        elif torch.cuda.is_available():
-            # in the old code, all ranks can see all devices but need to be assigned a device equal to their local rank
-            # this is dangerous and should be deprecated, however, FSDP still requires backwards compatibility with
-            # initializing this way for now so we need to keep it
-            torch.cuda.set_device(config["local_rank"])
-            dist.init_process_group(
-            backend=config["distributed_backend"],
-            rank=int(os.environ.get("RANK")),
-            world_size=config["world_size"],
-            timeout=timeout,
-        )
+            # 只有当明确需要分布式训练时才设置环境变量
+            if config.get("force_distributed", False) or config["world_size"] > 1:
+                assert (
+                    config["world_size"] == 1
+                ), "Can only setup master address and port at this point for a single rank..."
+                setup_env_local()
+            # 否则不设置任何分布式环境变量
+        
+        # 只有在环境变量存在且world_size>1时才初始化分布式
+        if (os.environ.get("MASTER_ADDR") and 
+            config["world_size"] > 1 and 
+            torch.cuda.is_available()):
+            
+            config["local_rank"] = int(os.environ.get("LOCAL_RANK", 0))
+            
+            if config.get("use_cuda_visibile_devices"):
+                assign_device_for_local_rank(config["cpu"], config["local_rank"])
+            else:
+                torch.cuda.set_device(config["local_rank"])
+                dist.init_process_group(
+                    backend=config["distributed_backend"],
+                    rank=int(os.environ.get("RANK", 0)),
+                    world_size=config["world_size"],
+                    timeout=timeout,
+                )
+        else:
+            # 单卡情况下，确保清理可能存在的分布式状态
+            if dist.is_initialized():
+                dist.destroy_process_group()
 
 
 def cleanup() -> None:

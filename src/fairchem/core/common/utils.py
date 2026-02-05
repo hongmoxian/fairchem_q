@@ -1214,7 +1214,7 @@ def load_state_dict(
     strict: bool = True,
 ) -> tuple[list[str], list[str]]:
     incompat_keys = module.load_state_dict(state_dict, strict=False)  # type: ignore
-    return _report_incompat_keys(module, incompat_keys, strict=strict)
+    return _report_incompat_keys(module, incompat_keys, strict=False)
 
 
 def scatter_det(*args, **kwargs):

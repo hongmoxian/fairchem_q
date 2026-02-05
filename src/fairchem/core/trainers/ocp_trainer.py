@@ -356,9 +356,6 @@ class OCPTrainer(BaseTrainer):
                     pred = pred[mask]
                     natoms = natoms[mask]
 
-
-
-
             num_atoms_in_batch = natoms.numel()
 
             ### reshape accordingly: num_atoms_in_batch, -1 or num_systems_in_batch, -1
@@ -376,37 +373,55 @@ class OCPTrainer(BaseTrainer):
             if target_name in self.normalizers:
                 target = self.normalizers[target_name].norm(target)
 
-            mult = loss_info["coefficient"]
+            mult = loss_info["coefficient"] 
             if target_name == 'hessian':
-            # 检查当前批次是否有hessian数据
-                if hasattr(batch, 'hessian'):
-                    # 当前批次有hessian数据，使用实际值
-                    row_mask = out["row_mask"]
-                    pred_hessian = out["hessian"]
-                    target_hessian = batch.hessian
-                else:
-                    # 当前批次没有hessian数据，创建全零矩阵和零mask
-                    n_atoms = batch.natoms.sum()
-                    hessian_size = 3 * n_atoms
-                    target_hessian = torch.zeros((hessian_size, hessian_size), device=self.device, dtype=pred.dtype)
-                    pred_hessian = torch.zeros((hessian_size, hessian_size), device=self.device, dtype=pred.dtype)
-                    # 创建对应大小的mask，全部为0
-                    row_mask = torch.zeros((hessian_size, 1), device=self.device, dtype=pred.dtype)
-                n_atoms = batch.natoms.numel()
+                # 必须同时存在预测值、真值和掩码
+                if hasattr(batch, 'hessian') and hasattr(batch, 'hessian_mask'):
+                    # 1. 获取基础数据
+                    row_mask = out["row_mask"]        # [3*N_total, 1], 模型采样了哪些行
+                    pred_hessian = out["hessian"]     # [3*N_total, 3*N_total]
+                    target_hessian = batch.hessian    # [3*N_total, 3*N_total]
+                    
+                    # 2. 构建数据有效性掩码 (Data Mask)
+                    # batch.hessian_mask 是图级别的 [Batch_Size]
+                    # 我们需要将其扩展到自由度级别 [3*N_total, 1]
+                    
+                    # batch.batch: [N_total] -> 每个原子属于哪个图
+                    # 查表得到每个原子是否有效: [N_total]
+                    atom_has_data = batch.hessian_mask[batch.batch]
+                    
+                    # 扩展到 3个自由度 (x,y,z): [3*N_total]
+                    dof_has_data = torch.repeat_interleave(atom_has_data, 3)
+                    
+                    # 调整形状以支持广播: [3*N_total, 1]
+                    data_mask = dof_has_data.unsqueeze(1)
+                    
+                    # 3. 组合最终掩码 (Final Mask)
+                    # 有效行 = (模型采样了这一行) AND (这一行所属的图有Hessian真值)
+                    valid_mask = row_mask * data_mask
+                    
+                    # 4. 计算 Loss
+                    diff = pred_hessian - target_hessian
+                    
+                    # 只保留有效行的误差，其他位置置为 0
+                    # 注意：这里利用广播机制，valid_mask 会作用于每一列
+                    masked_sq_error = torch.abs(diff) * valid_mask
+                    
+                    # 5. 归一化 (Normalization)
+                    # 分母应该是：有效行的数量 * 列数 (3*N_total)
+                    # 或者更精确地：有效元素在矩阵中的总个数
+                    
+                    num_valid_rows = valid_mask.sum()
+                    num_cols = target_hessian.shape[1]
+                    num_valid_elements = num_valid_rows * num_cols
+                    
+                    # 加上 1e-8 防止除以零 (如果 batch 里全是无 Hessian 数据的情况)
+                    loss_hessian = masked_sq_error.sum() / (num_valid_elements + 1e-8)
+                    
+                    # 应用系数
+                    loss_hessian = mult * loss_hessian
+                    loss.append(loss_hessian)
 
-                # 计算Masked Loss
-                # 只计算 row_mask=1 的那些行的误差
-                diff = pred_hessian - target_hessian
-
-                # 平方误差 * 行掩码
-                masked_sq_error = (diff ** 2) * row_mask
-
-                # 求平均，除以采样的元素总数
-                loss_hessian = masked_sq_error.sum() / (row_mask.sum() * 3 * n_atoms + 1e-8)
-                
-                # 应用系数
-                loss_hessian = mult * loss_hessian
-                loss.append(loss_hessian)
             else:
                 loss.append(
                     mult
