@@ -1323,7 +1323,7 @@ class GemNetOC(nn.Module, GraphModelMixin):
 
         if self.regress_hessian:
             hessian, row_mask = self.force_scaler.compute_hessian_masked(
-                forces=F_t, data=data, training=self.training, max_samples=4
+                forces=F_t, data=data, training=self.training, max_samples=5
             )
             outputs["hessian"] = hessian
             outputs["row_mask"] = row_mask
