@@ -316,17 +316,7 @@ class OCPTrainer(BaseTrainer):
             else:
                 pred = pred.view(batch_size, -1)
             outputs[target_key] = pred
-        if hasattr(batch, 'hessian'):
-        # 有hessian数据，mask设为1
-            n_atoms = batch.natoms.sum()
-            hessian_size = 3 * n_atoms
-            outputs["row_mask"] = torch.ones((hessian_size, 1), device=self.device, dtype=out["hessian"].dtype)
-        else:
-            # 没有hessian数据，mask设为0
-            n_atoms = batch.natoms.sum()
-            hessian_size = 3 * n_atoms
-            outputs["row_mask"] = torch.zeros((hessian_size, 1), device=self.device, 
-                                            dtype=out.get("hessian", torch.zeros(1, device=self.device)).dtype)
+        outputs['row_mask'] = out.get('row_mask', None)
 
         return outputs
 
@@ -374,62 +364,102 @@ class OCPTrainer(BaseTrainer):
 
             mult = loss_info["coefficient"] 
             if target_name == 'hessian':
-                loss_hessian = torch.tensor(0.0, device=self.device)
+                loss_hessian_elem = torch.tensor(0.0, device=self.device)
+                loss_hessian_eig = torch.tensor(0.0, device=self.device)
                 
                 # 只有当 batch 中存在 Hessian 标签且存在有效性掩码时才计算
                 if hasattr(batch, 'hessian') and hasattr(batch, 'hessian_mask'):
                     
-                    # 1. 准备行掩码 (Row Mask)
-                    # row_mask: [3N_total, 1] (来自模型输出，指示随机采样了哪些行)
-                    row_mask = out["row_mask"].bool() 
+                    # --- A. 准备基础掩码 ---
+                    row_mask = out["row_mask"].bool()     # [3N_total, 1]
+                    pred_hessian = out["hessian"]         # [3N_total, 3N_total] (稠密)
+                    target_hessian = batch.hessian        # [3N_total, 3N_total] (稀疏/清洗过)
                     
-                    # 2. 准备数据存在掩码 (Data Existence Mask)
-                    # batch.hessian_mask: [Batch_Size] (指示哪些图有 Hessian 真值)
-                    # 映射到自由度级别: [3N_total, 1]
+                    # 确定自由度掩码 (Free DoF Mask)
+                    if hasattr(batch, 'fixed'):
+                        # 强制展平，防止 [N, 1] 形状问题
+                        fixed_flat = batch.fixed.view(-1) 
+                        is_free = (fixed_flat == 0)
+                        free_dof_mask = torch.repeat_interleave(is_free, 3) # [3N_total]
+                    else:
+                        free_dof_mask = torch.ones(pred_hessian.shape[0], dtype=torch.bool, device=self.device)
+
+                    # 数据存在掩码 (哪些图有真值)
                     atom_has_data = batch.hessian_mask[batch.batch]
                     dof_has_data = torch.repeat_interleave(atom_has_data, 3).unsqueeze(1).bool()
                     
-                    # 3. 确定“有效行”索引 (Valid Row Indices)
-                    # 逻辑：(模型采样了该行) AND (该数据包含 Hessian 真值)
-                    # 使用 boolean indexing 直接提取索引，后续只处理这些行
+                    # --- B. 计算 Element-wise MSE Loss ---
+                    # 1. 确定有效行：(模型采样了) & (数据有真值)
+                    # 使用 view(-1) 确保维度安全
                     valid_mask_flat = (row_mask & dof_has_data).view(-1)
                     valid_row_indices = torch.nonzero(valid_mask_flat).view(-1)
 
-                    # 如果没有有效行 (例如 batch 里全是无 Hessian 数据，或者采样没采到)，跳过
                     if valid_row_indices.numel() > 0:
-                        pred_hessian = out["hessian"]  # [3N, 3N]
-                        target_hessian = batch.hessian # [3N, 3N]
-
-                        # 4. 提取有效行数据 (Slicing)
-                        # [3N, 3N] -> [N_valid_rows, 3N]
-                        # 这一步极大地减少了数据量
+                        # 2. 提取行 [K, 3N]
                         pred_active_rows = pred_hessian[valid_row_indices]
                         target_active_rows = target_hessian[valid_row_indices]
+                        
+                        # 3. 列掩码 (只比较 Free-Free 部分)
+                        # 即使模型算出了 Fixed 列的数值，因为 Target 是 0，必须 mask 掉，否则 Loss 巨大
+                        # pred_active: [K, N_free]
+                        pred_active = pred_active_rows[:, free_dof_mask]
+                        target_active = target_active_rows[:, free_dof_mask]
 
-                        # 5. 列掩码 (Column Masking - 处理固定原子)
-                        # 我们不仅要选行，还要屏蔽掉列中对应的固定原子 (Fixed Atoms)
-                        # 因为 H_xf (固定原子受力) 我们不关心，或者 VASP 算得不对
-                        if hasattr(batch, 'fixed'):
-                            # fixed: [N_total] -> [3N_total]
-                            fixed_flat = batch.fixed.view(-1)
-                            is_free = (batch.fixed == 0)
-                            free_dof_mask = torch.repeat_interleave(is_free, 3).bool()
+                        # 4. MSE 计算
+                        loss_hessian_elem = torch.nn.functional.mse_loss(pred_active, target_active)
+
+                    # --- C. 计算 Eigenvalue Loss (可选) ---
+                    # 仅当配置了 eig_coefficient > 0 时计算
+                    eig_mult = loss_info.get("eig_coefficient", 1.0)
+                    
+                    if eig_mult > 0:
+                        batch_eig_losses = []
+                        start_idx = 0
+                        
+                        # 本征值必须逐个分子计算 (因为矩阵大小不一样)
+                        for i, n_atom in enumerate(batch.natoms):
+                            n_dof = 3 * n_atom
+                            end_idx = start_idx + n_dof
                             
-                            # 只保留自由原子的列
-                            # [N_valid_rows, 3N] -> [N_valid_rows, N_free_dofs]
-                            pred_active = pred_active_rows[:, free_dof_mask]
-                            target_active = target_active_rows[:, free_dof_mask]
-                        else:
-                            pred_active = pred_active_rows
-                            target_active = target_active_rows
+                            # 1. 检查该分子是否有 Hessian 数据
+                            if batch.hessian_mask[i] > 0:
+                                # 2. 提取该分子的 Block [3N_i, 3N_i]
+                                h_pred_sys = pred_hessian[start_idx:end_idx, start_idx:end_idx]
+                                h_target_sys = target_hessian[start_idx:end_idx, start_idx:end_idx]
+                                mask_sys = free_dof_mask[start_idx:end_idx]
+                                
+                                # 3. 提取 Free-Free 子矩阵 [N_free_i, N_free_i]
+                                # 必须只算 Free 部分，否则 Fixed 部分的 0 会导致大量零本征值
+                                h_pred_free = h_pred_sys[mask_sys][:, mask_sys]
+                                h_target_free = h_target_sys[mask_sys][:, mask_sys]
+                                
+                                # 4. 强制对称化 (保证实数本征值)
+                                # h_pred_free = 0.5 * (h_pred_free + h_pred_free.T)
+                                # Target 本身应该是对称的，但保险起见也可以做一下
+                                # h_target_free = 0.5 * (h_target_free + h_target_free.T)
+                                
+                                # 5. 计算本征值 (eigvalsh 针对实对称矩阵，更快更稳)
+                                # 注意：如果 h_pred_free 维度为 0 (全固定)，这就没法算了，加个 check
+                                if h_pred_free.numel() > 0 and not self.model.training:
+                                    try:
+                                        eig_pred = torch.linalg.eigvalsh(h_pred_free)
+                                        # 如果 LMDB 里存了 eigvals 可以直接读，但实时算 Target 更保险(这就不用担心 mask 对不齐)
+                                        eig_target = torch.linalg.eigvalsh(h_target_free)
+                                        
+                                        # 计算本征值 MSE
+                                        loss_e = torch.nn.functional.mse_loss(eig_pred, eig_target)
+                                        batch_eig_losses.append(loss_e)
+                                    except RuntimeError:
+                                        pass # 极少数数值不稳定情况跳过
 
-                        # 6. 计算 Loss (MSE 推荐)
-                        # 使用 MSE (L2) 而不是 MAE (L1)，因为 Hessian 对大数值敏感
-                        # reduction='mean' 会自动除以元素个数 (N_valid_rows * N_free_dofs)
-                        loss_hessian = torch.nn.functional.mse_loss(pred_active, target_active)
-                
-                # 应用系数
-                loss.append(mult * loss_hessian)
+                            start_idx = end_idx
+                        
+                        if len(batch_eig_losses) > 0:
+                            loss_hessian_eig = torch.stack(batch_eig_losses).mean()
+
+                # --- D. 组合 Loss ---
+                total_hessian_loss = loss_hessian_elem + eig_mult * loss_hessian_eig
+                loss.append(mult * total_hessian_loss)
 
             else:
                 loss.append(
@@ -444,7 +474,7 @@ class OCPTrainer(BaseTrainer):
         for lc in loss:
             assert hasattr(lc, "grad_fn")
 
-        return sum(loss), loss_hessian if loss_hessian is not None else None
+        return sum(loss), total_hessian_loss if total_hessian_loss is not None else None
 
     def _compute_metrics(self, out, batch, evaluator, metrics=None):
         if metrics is None:
