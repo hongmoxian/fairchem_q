@@ -173,8 +173,8 @@ class OCPTrainer(BaseTrainer):
                     self.metrics,
                 )
                 self.metrics = self.evaluator.update("loss", loss.item(), self.metrics)
-                if loss_hessian is not None:
-                    self.metrics = self.evaluator.update("loss_hessian", loss_hessian.item(), self.metrics)
+                # if loss_hessian is not None:
+                #     self.metrics = self.evaluator.update("loss_hessian", loss_hessian.item(), self.metrics)
 
                 loss = self.scaler.scale(loss) if self.scaler else loss
                 self._backward(loss)
@@ -316,7 +316,6 @@ class OCPTrainer(BaseTrainer):
             else:
                 pred = pred.view(batch_size, -1)
             outputs[target_key] = pred
-        outputs['row_mask'] = out.get('row_mask', None)
 
         return outputs
 
@@ -327,6 +326,8 @@ class OCPTrainer(BaseTrainer):
 
         loss = []
         # calc_hessian = True
+        total_hessian_loss = torch.zeros(1).to(self.device)
+
         for loss_fn in self.loss_functions:
             target_name, loss_info = loss_fn
 
@@ -362,55 +363,28 @@ class OCPTrainer(BaseTrainer):
             if target_name in self.normalizers:
                 target = self.normalizers[target_name].norm(target)
 
-            mult = loss_info["coefficient"] 
+            mult = loss_info["coefficient"]
             if target_name == 'hessian':
                 loss_hessian_elem = torch.tensor(0.0, device=self.device)
                 loss_hessian_eig = torch.tensor(0.0, device=self.device)
+
                 
                 # 只有当 batch 中存在 Hessian 标签且存在有效性掩码时才计算
-                if hasattr(batch, 'hessian') and hasattr(batch, 'hessian_mask'):
+                eig_mult = loss_info.get("eig_coefficient", 10.0)
+                if hasattr(batch, 'hessian') and batch.hessian_mask:
                     
                     # --- A. 准备基础掩码 ---
-                    row_mask = out["row_mask"].bool()     # [3N_total, 1]
                     pred_hessian = out["hessian"]         # [3N_total, 3N_total] (稠密)
                     target_hessian = batch.hessian        # [3N_total, 3N_total] (稀疏/清洗过)
                     
-                    # 确定自由度掩码 (Free DoF Mask)
-                    if hasattr(batch, 'fixed'):
-                        # 强制展平，防止 [N, 1] 形状问题
-                        fixed_flat = batch.fixed.view(-1) 
-                        is_free = (fixed_flat == 0)
-                        free_dof_mask = torch.repeat_interleave(is_free, 3) # [3N_total]
-                    else:
-                        free_dof_mask = torch.ones(pred_hessian.shape[0], dtype=torch.bool, device=self.device)
 
-                    # 数据存在掩码 (哪些图有真值)
-                    atom_has_data = batch.hessian_mask[batch.batch]
-                    dof_has_data = torch.repeat_interleave(atom_has_data, 3).unsqueeze(1).bool()
-                    
-                    # --- B. 计算 Element-wise MSE Loss ---
-                    # 1. 确定有效行：(模型采样了) & (数据有真值)
-                    # 使用 view(-1) 确保维度安全
-                    valid_mask_flat = (row_mask & dof_has_data).view(-1)
-                    valid_row_indices = torch.nonzero(valid_mask_flat).view(-1)
-
-                    if valid_row_indices.numel() > 0:
-                        # 2. 提取行 [K, 3N]
-                        pred_active_rows = pred_hessian[valid_row_indices]
-                        target_active_rows = target_hessian[valid_row_indices]
-                        
-                        # 3. 列掩码 (只比较 Free-Free 部分)
-                        # 即使模型算出了 Fixed 列的数值，因为 Target 是 0，必须 mask 掉，否则 Loss 巨大
-                        # pred_active: [K, N_free]
-                        pred_active = pred_active_rows[:, free_dof_mask]
-                        target_active = target_active_rows[:, free_dof_mask]
 
                         # 4. MSE 计算
-                        loss_hessian_elem = torch.nn.functional.mse_loss(pred_active, target_active)
+                    loss_hessian_elem = torch.nn.functional.mse_loss(pred_hessian, target_hessian)
 
                     # --- C. 计算 Eigenvalue Loss (可选) ---
                     # 仅当配置了 eig_coefficient > 0 时计算
-                    eig_mult = loss_info.get("eig_coefficient", 1.0)
+                    
                     
                     if eig_mult > 0:
                         batch_eig_losses = []
@@ -422,35 +396,19 @@ class OCPTrainer(BaseTrainer):
                             end_idx = start_idx + n_dof
                             
                             # 1. 检查该分子是否有 Hessian 数据
-                            if batch.hessian_mask[i] > 0:
-                                # 2. 提取该分子的 Block [3N_i, 3N_i]
-                                h_pred_sys = pred_hessian[start_idx:end_idx, start_idx:end_idx]
-                                h_target_sys = target_hessian[start_idx:end_idx, start_idx:end_idx]
-                                mask_sys = free_dof_mask[start_idx:end_idx]
+
+                            h_pred_sys = pred_hessian[start_idx:end_idx, start_idx:end_idx]
+                            h_target_sys = target_hessian[start_idx:end_idx, start_idx:end_idx]
                                 
-                                # 3. 提取 Free-Free 子矩阵 [N_free_i, N_free_i]
-                                # 必须只算 Free 部分，否则 Fixed 部分的 0 会导致大量零本征值
-                                h_pred_free = h_pred_sys[mask_sys][:, mask_sys]
-                                h_target_free = h_target_sys[mask_sys][:, mask_sys]
-                                
-                                # 4. 强制对称化 (保证实数本征值)
-                                # h_pred_free = 0.5 * (h_pred_free + h_pred_free.T)
-                                # Target 本身应该是对称的，但保险起见也可以做一下
-                                # h_target_free = 0.5 * (h_target_free + h_target_free.T)
-                                
-                                # 5. 计算本征值 (eigvalsh 针对实对称矩阵，更快更稳)
-                                # 注意：如果 h_pred_free 维度为 0 (全固定)，这就没法算了，加个 check
-                                if h_pred_free.numel() > 0 and not self.model.training:
-                                    try:
-                                        eig_pred = torch.linalg.eigvalsh(h_pred_free)
-                                        # 如果 LMDB 里存了 eigvals 可以直接读，但实时算 Target 更保险(这就不用担心 mask 对不齐)
-                                        eig_target = torch.linalg.eigvalsh(h_target_free)
-                                        
-                                        # 计算本征值 MSE
-                                        loss_e = torch.nn.functional.mse_loss(eig_pred, eig_target)
-                                        batch_eig_losses.append(loss_e)
-                                    except RuntimeError:
-                                        pass # 极少数数值不稳定情况跳过
+                            
+
+                            eig_pred = torch.linalg.eigvalsh(h_pred_sys)
+                            # 如果 LMDB 里存了 eigvals 可以直接读，但实时算 Target 更保险(这就不用担心 mask 对不齐)
+                            eig_target = torch.linalg.eigvalsh(h_target_sys)
+                            
+                            # 计算本征值 MSE
+                            loss_e = torch.nn.functional.mse_loss(eig_pred, eig_target)
+                            batch_eig_losses.append(loss_e)
 
                             start_idx = end_idx
                         

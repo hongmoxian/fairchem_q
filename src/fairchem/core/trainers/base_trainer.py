@@ -18,6 +18,8 @@ from abc import ABC, abstractmethod
 from functools import partial
 from itertools import chain
 from typing import TYPE_CHECKING, Any
+import json
+from fairchem.core.common.utils import scatter_det
 
 import numpy as np
 import numpy.typing as npt
@@ -241,6 +243,7 @@ class BaseTrainer(ABC):
         self.load_logger()
         self.load_task()
         self.load_model()
+        self.compute_and_load_statistics(save_path='/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/hessian/atom_ref_energies.json')
 
         if inference_only is False:
             self.load_datasets()
@@ -1004,3 +1007,82 @@ class BaseTrainer(ABC):
             )
             logging.info(f"Writing results to {full_path}")
             np.savez_compressed(full_path, **gather_results)
+
+    def compute_and_load_statistics(self, save_path="./atom_ref_energies.json"):
+        """
+        计算或加载原子参考能。
+        如果 save_path 存在，直接加载；否则遍历 train_loader 计算并保存。
+        """
+
+        ref_dict = None
+
+        # 1. 尝试从文件加载
+        if os.path.exists(save_path):
+            print(f">>> Found existing reference energies at {save_path}. Loading...")
+            try:
+                with open(save_path, 'r') as f:
+                    data = json.load(f)
+                    # 注意：JSON 的键只能是字符串，读取后需要转回 int
+                    ref_dict = {int(k): v for k, v in data.items()}
+                print(f">>> Loaded successfully: {ref_dict}")
+            except Exception as e:
+                print(f"Error loading json: {e}. Will re-compute.")
+                ref_dict = None
+
+        # 2. 如果没加载到，则开始计算 (你的原始逻辑)
+        if ref_dict is None:
+            print(">>> Computing per-atom reference energies from train_loader (this may take a while)...")
+
+            atom_counts = []
+            energies = []
+            max_z = 100 
+            if not self.train_loader:
+                return
+            # 遍历 DataLoader
+            with torch.no_grad():
+                for batch in tqdm(self.train_loader, desc="Fitting E_ref"):
+                    num_graphs = len(batch)
+                    batch_z = batch.atomic_numbers.cpu()
+                    batch_idx = batch.batch.cpu()
+                    batch_y = batch.energy.cpu()
+
+                    # 统计原子个数
+                    counts = torch.zeros(num_graphs, max_z)
+                    z_onehot = torch.zeros(batch_z.size(0), max_z)
+                    z_onehot.scatter_(1, batch_z.unsqueeze(1).long(), 1)
+
+                    counts = scatter_det(z_onehot, batch_idx, dim=0)
+
+                    atom_counts.append(counts.numpy())
+                    energies.append(batch_y.numpy())
+
+            # 拼接矩阵
+            A = np.vstack(atom_counts)
+            b = np.concatenate(energies)
+
+            print(f"Solving linear system with shape A={A.shape}, b={b.shape}...")
+            solution, residuals, rank, s = np.linalg.lstsq(A, b, rcond=None)
+
+            # 转换结果为字典
+            nonzero_indices = np.where(solution != 0)[0]
+            # 关键：这里必须用 float() 将 numpy float 转为 python float，否则 json 不支持
+            ref_dict = {int(z): float(e) for z, e in zip(nonzero_indices, solution[nonzero_indices])}
+            print(f"Fitted Reference Energies: {ref_dict}")
+
+            # 3. 保存到文件，供下次使用
+            print(f">>> Saving reference energies to {save_path}...")
+            with open(save_path, 'w') as f:
+                # indent=4 让文件看起来更美观
+                json.dump(ref_dict, f, indent=4)
+
+        # ==========================================
+        # 4. 将结果赋值给模型
+        # ==========================================
+        # 处理 DDP 情况
+        if hasattr(self.model, 'module'):
+            model_ref = self.model.module.normalizer
+        else:
+            model_ref = self.model.normalizer
+
+        model_ref.set_refs(ref_dict)
+        print(">>> Reference energies loaded into model successfully.")

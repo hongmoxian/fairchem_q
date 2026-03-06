@@ -45,7 +45,36 @@ from .utils import (
 if typing.TYPE_CHECKING:
     from torch_geometric.data.batch import Batch
 
+class AtomwiseLinearShift(nn.Module):
+    def __init__(self, max_z=10):
+        super().__init__()
+        # 注册一个 Buffer，这意味着它会被保存到 state_dict 中，
+        # 但不会被优化器更新 (类似于 BatchNorm 的 running_mean)
+        self.register_buffer('atom_refs', torch.zeros(max_z, 1))
+        self.is_fitted = False
 
+    def set_refs(self, refs_dict):
+        """
+        手动设置参考能
+        refs_dict: {1: -13.6, 6: -100.2, ...} (原子序数: 能量)
+        """
+        for z, e in refs_dict.items():
+            if z < len(self.atom_refs):
+                self.atom_refs[z] = e
+        self.is_fitted = True
+
+    def forward(self, z, batch=None):
+        # 查表获取原子参考能
+        # atom_refs: [Max_Z, 1] -> [N_atoms, 1]
+        atom_e = self.atom_refs[z.to(torch.int)]
+
+        if batch is not None:
+            # 如果是 Batch 推理，按图求和
+            return scatter_det(atom_e, batch, dim=0)
+        else:
+            # 如果是单结构，直接求和
+            return atom_e.sum().view(1, 1)
+        
 @registry.register_model("gemnet_oc")
 class GemNetOC(nn.Module, GraphModelMixin):
     """
@@ -384,6 +413,13 @@ class GemNetOC(nn.Module, GraphModelMixin):
             self.out_forces.reset_parameters(out_initializer)
 
         load_scales_compat(self, scale_file)
+
+        self.normalizer = AtomwiseLinearShift(max_z=100)
+        if self.regress_hessian:
+            # 输入为边的特征维度，输出2个标量参数 (a, b)
+            self.out_hessian_scalars = Dense(emb_size_edge, 2, bias=False, activation=None)
+            out_initializer = get_initializer(output_init)
+            self.out_hessian_scalars.reset_parameters(out_initializer)
 
     def set_cutoffs(self, cutoff, cutoff_qint, cutoff_aeaint, cutoff_aint):
         self.cutoff = cutoff
@@ -1268,7 +1304,7 @@ class GemNetOC(nn.Module, GraphModelMixin):
         # Global output block for final predictions
         x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1))
         if self.direct_forces:
-            x_F = self.out_mlp_F(torch.cat(xs_F, dim=-1))
+            x_F = self.out_mlp_F(torch.cat(xs_F, dim=-1)).float()
         with torch.autocast("cuda", enabled=False):
             E_t = self.out_energy(x_E.float())
             if self.direct_forces:
@@ -1285,6 +1321,9 @@ class GemNetOC(nn.Module, GraphModelMixin):
             )  # (nMolecules, 1)
 
         E_t = E_t.squeeze(1)  # (num_molecules)
+
+        # e_ref = self.normalizer(data.atomic_numbers, data.batch)
+        # E_t =E_t + e_ref
         outputs = {"energy": E_t}
         if self.regress_forces:
             if self.direct_forces:
@@ -1321,12 +1360,78 @@ class GemNetOC(nn.Module, GraphModelMixin):
 
             outputs["forces"] = F_t
 
-        if self.regress_hessian:
-            hessian, row_mask = self.force_scaler.compute_hessian_masked(
-                forces=F_t, data=data, training=self.training, max_samples=5
+        if self.regress_hessian and self.direct_forces:
+            with torch.autocast("cuda", enabled=False):
+                # 预测边上的两个等变标量系数 a 和 b
+                H_scalars = self.out_hessian_scalars(x_F) 
+
+            # 保持牛顿第三定律的对称性 H_st = (H_ts)^T = H_ts
+            if self.forces_coupled:
+                nEdges = idx_t.shape[0]
+                id_undir = repeat_blocks(
+                    main_graph["num_neighbors"] // 2,
+                    repeats=2,
+                    continuous_indexing=True,
+                )
+                H_scalars = scatter_det(
+                    H_scalars, id_undir, dim=0, dim_size=int(nEdges / 2), reduce="mean"
+                )
+                H_scalars = H_scalars[id_undir]
+
+            a_st = H_scalars[:, 0:1]  # (nEdges, 1)
+            b_st = H_scalars[:, 1:2]  # (nEdges, 1)
+
+            # 获取边方向向量
+            v = main_graph["vector"]  # (nEdges, 3)
+            
+            # 1. 构造张量外积 v ⊗ v -> (nEdges, 3, 3)
+            v_outer = v.unsqueeze(2) * v.unsqueeze(1) 
+            
+            # 2. 构造 3x3 单位阵 I -> (1, 3, 3)
+            I = torch.eye(3, device=v.device, dtype=v.dtype).unsqueeze(0)
+            
+            # 3. 计算每条边对应的 3x3 Hessian 子块: H_st = a*I + b*(v⊗v)
+            # 形状: (nEdges, 3, 3)
+            H_st = a_st.unsqueeze(-1) * I + b_st.unsqueeze(-1) * v_outer
+
+            idx_s = main_graph["edge_index"][0] # Source atoms
+            # idx_t = main_graph["edge_index"][1] 已经在前面获取过了
+            
+            # 4. 初始化全局全量矩阵, 使用 scatter_add 处理多重边 (如 PBC)
+            # 计算展平的 N x N 索引
+            flat_idx = idx_t * num_atoms + idx_s  # (nEdges,)
+            
+            # 初始化 (N*N, 9) 形状的张量
+            H_global_flat = torch.zeros(num_atoms * num_atoms, 9, device=v.device, dtype=H_st.dtype)
+            
+            # 累加边上的 Hessian 块
+            H_global_flat.scatter_add_(
+                dim=0, 
+                index=flat_idx.view(-1, 1).expand(-1, 9), 
+                src=H_st.view(-1, 9)
             )
-            outputs["hessian"] = hessian
-            outputs["row_mask"] = row_mask
+            
+            # 恢复为 (N, N, 3, 3)
+            # H_global[t, s, :, :] 表示目标原子 t 和源原子 s 的 3x3 作用块
+            H_global = H_global_flat.view(num_atoms, num_atoms, 3, 3)
+            
+            # 5. 应用声学求和规则 (ASR, Acoustic Sum Rule) 计算对角线块
+            # H_tt = - sum_{s ≠ t} H_ts
+            # 沿着源原子维度 (s, 即 dim=1) 累加
+            H_diag = -H_global.sum(dim=1)  # (num_atoms, 3, 3)
+            
+            # 将满足平移不变性的对角块强制填回矩阵对角线
+            atom_indices = torch.arange(num_atoms, device=v.device)
+            H_global[atom_indices, atom_indices, :, :] = H_diag
+            
+            # 6. 重新排列维度并展平为最终的 (3N, 3N) 稠密矩阵
+            # 从 (N_t, N_s, 3_t, 3_s) 变为 (N_t, 3_t, N_s, 3_s) 然后打平
+            H_final = H_global.permute(0, 2, 1, 3).reshape(num_atoms * 3, num_atoms * 3)
+            
+            
+            H_final = 0.5 * (H_final + H_final.T)
+
+            outputs["hessian"] = H_final
 
         return outputs
 
