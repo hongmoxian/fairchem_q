@@ -858,7 +858,6 @@ class BaseTrainer(ABC):
             )
         return aggregated_metrics
 
-    @torch.no_grad()
     def validate(self, split: str = "val", disable_tqdm: bool = False):
         ensure_fitted(self._unwrapped_model, warn=True)
 
@@ -881,6 +880,11 @@ class BaseTrainer(ABC):
         rank = distutils.get_rank()
 
         loader = self.val_loader if split == "val" else self.test_loader
+        model_for_eval = self._unwrapped_model
+        needs_autograd_eval = (
+            getattr(model_for_eval, "regress_forces", False)
+            or getattr(model_for_eval, "regress_hessian", False)
+        ) and not getattr(model_for_eval, "direct_forces", True)
 
         for _i, batch in tqdm(
             enumerate(loader),
@@ -890,9 +894,11 @@ class BaseTrainer(ABC):
             disable=disable_tqdm,
         ):
             # Forward.
-            with torch.autocast("cuda", enabled=self.scaler is not None):
-                batch.to(self.device)
-                out = self._forward(batch)
+            grad_context = torch.enable_grad() if needs_autograd_eval else torch.no_grad()
+            with grad_context:
+                with torch.autocast("cuda", enabled=self.scaler is not None):
+                    batch.to(self.device)
+                    out = self._forward(batch)
             loss, loss_hessian = self._compute_loss(out, batch)
 
             # Compute metrics.

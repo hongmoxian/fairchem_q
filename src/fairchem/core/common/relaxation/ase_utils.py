@@ -114,6 +114,7 @@ class OCPCalculator(Calculator):
     """ASE based calculator using an OCP model"""
 
     _reshaped_props = ASE_PROP_RESHAPE
+    implemented_properties = ['energy', 'hessian', 'forces']
 
     def __init__(
         self,

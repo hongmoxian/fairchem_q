@@ -98,129 +98,114 @@ class ForceScaler:
 
     def compute_hessian_masked(self, forces, data, training=None, max_samples=None):
         """
-        [增强版] 计算 Hessian 矩阵，添加全面的数值稳定性控制
+        Compute either a full Hessian or a sampled subset of rows.
+
+        During training, if ``max_samples`` is set and smaller than the total
+        number of degrees of freedom, a random subset of rows is evaluated and
+        returned together with the corresponding row indices. During inference,
+        all rows are evaluated.
         """
-        # 1. 自动确定模式
         if training is None:
-            training = self.training
+            training = False
 
         pos = data.pos
         n_atoms = pos.shape[0]
         device = pos.device
         n_dofs = 3 * n_atoms
-        
-        # ==========================================
-        # 2. 确定要计算的行 (默认所有自由度)
-        # ==========================================
-        active_indices = torch.arange(n_dofs, device=device)
 
-        # ==========================================
-        # 3. 采样逻辑
-        # ==========================================
+        active_indices = torch.arange(n_dofs, device=device, dtype=torch.long)
         if training:
             if max_samples is not None and len(active_indices) > max_samples:
                 perm = torch.randperm(len(active_indices), device=device)
-                sampled_indices = active_indices[perm[:max_samples]]
+                sampled_indices = active_indices[perm[:max_samples]].sort().values
             else:
                 sampled_indices = active_indices
         else:
             sampled_indices = active_indices
 
-        # 初始化输出容器
-        hessian = torch.zeros(n_dofs, n_dofs, device=device)
-        row_mask = torch.zeros(n_dofs, 1, device=device)
-        
         if sampled_indices.numel() == 0:
-            return hessian, row_mask
-        
-        if not getattr(data, 'hessian_mask', True):
-            return hessian, row_mask
+            return (
+                torch.zeros(0, n_dofs, device=device, dtype=forces.dtype),
+                sampled_indices,
+            )
 
-        # 标记被选中的行
-        row_mask[sampled_indices] = 1.0
-        
-        # ==========================================
-        # 4. 核心计算：添加数值稳定性控制
-        # ==========================================
+        if not getattr(data, "hessian_mask", True):
+            return (
+                torch.zeros(
+                    sampled_indices.numel(),
+                    n_dofs,
+                    device=device,
+                    dtype=forces.dtype,
+                ),
+                sampled_indices,
+            )
+
         forces_flat = forces.flatten()
-        num_sampled = sampled_indices.numel()
-        
-        # 数值稳定性参数
-        hessian_clamp_min = -100.0  # 防止极小值
-        hessian_clamp_max = 100.0   # 防止极大值
-        max_gradient_norm = 100.0    # 梯度裁剪阈值
-        
-        for i in range(num_sampled):
-            idx = sampled_indices[i]
-            
-            # 构造基向量
+        num_sampled = int(sampled_indices.numel())
+        hessian_rows = torch.zeros(
+            num_sampled,
+            n_dofs,
+            device=device,
+            dtype=forces.dtype,
+        )
+
+        hessian_clamp_min = -100.0
+        hessian_clamp_max = 100.0
+        max_gradient_norm = 100.0
+
+        for i, idx in enumerate(sampled_indices):
             v = torch.zeros_like(forces_flat)
             v[idx] = 1.0 
-            
+
             try:
-                # 计算单行梯度
                 grad = torch.autograd.grad(
                     outputs=forces_flat,
                     inputs=pos,
                     grad_outputs=v,
-                    retain_graph=True,
-                    create_graph=training
+                    retain_graph=training or (i < (num_sampled - 1)),
+                    create_graph=training,
                 )[0]
-                
-                # 关键：数值稳定性控制
                 grad_flat = grad.flatten()
-                
-                # 1. 梯度范数检查和裁剪
+
                 grad_norm = torch.norm(grad_flat)
                 if grad_norm > max_gradient_norm:
                     grad_flat = grad_flat / grad_norm * max_gradient_norm
-                    logging.warning(f"Hessian row {idx}: Gradient norm {grad_norm:.2f} clipped to {max_gradient_norm}")
-                
-                # 2. 值域限制
+                    logging.warning(
+                        "Hessian row %s: gradient norm %.2f clipped to %.2f",
+                        int(idx.item()),
+                        float(grad_norm.item()),
+                        max_gradient_norm,
+                    )
+
                 grad_flat = torch.clamp(grad_flat, min=hessian_clamp_min, max=hessian_clamp_max)
-                
-                # 3. 异常值检查
+
                 if not torch.all(torch.isfinite(grad_flat)):
-                    logging.warning(f"Hessian row {idx}: Contains non-finite values, setting to zero")
+                    logging.warning(
+                        "Hessian row %s: contains non-finite values, setting to zero",
+                        int(idx.item()),
+                    )
                     grad_flat = torch.zeros_like(grad_flat)
-                
-                # 填入矩阵
-                hessian[idx] = grad_flat
-                
+
+                hessian_rows[i] = grad_flat
+
             except RuntimeError as e:
                 if "out of memory" in str(e):
-                    logging.error(f"OOM at Hessian row {idx}, setting to zero")
-                    hessian[idx] = torch.zeros(n_dofs, device=device)
+                    logging.error(
+                        "OOM at Hessian row %s, setting to zero",
+                        int(idx.item()),
+                    )
                 else:
-                    logging.error(f"Error computing Hessian row {idx}: {str(e)}")
-                    hessian[idx] = torch.zeros(n_dofs, device=device)
-            
-            # 显存清理
+                    logging.error(
+                        "Error computing Hessian row %s: %s",
+                        int(idx.item()),
+                        str(e),
+                    )
+
             del v
-            if 'grad' in locals():
+            if "grad" in locals():
                 del grad
-            
-            # 定期清理 CUDA 缓存
-            if training and (i % 10 == 0):
+            if training and (i % 10 == 0) and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # 加上负号 (F = -dH/dx)
-        hessian = -hessian
-        
-        # ==========================================
-        # 5. 后处理：对称化和最终检查
-        # ==========================================
-        # if not training:
-        #     # 推理模式：强制对称化
-        #     hessian = 0.5 * (hessian + hessian.T)
-            
-        #     # 最终数值检查和修正
-        #     hessian = torch.clamp(hessian, min=hessian_clamp_min, max=hessian_clamp_max)
-            
-        #     # 检查是否仍有异常值
-        #     if not torch.all(torch.isfinite(hessian)):
-        #         logging.error("Final Hessian contains non-finite values, applying corrections")
-        #         # 修复异常值
-        #         hessian = torch.nan_to_num(hessian, nan=0.0, posinf=hessian_clamp_max, neginf=hessian_clamp_min)
-
-        return hessian, row_mask
+        hessian_rows = -hessian_rows
+        return hessian_rows, sampled_indices

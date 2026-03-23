@@ -6,12 +6,18 @@ LICENSE file in the root directory of this source tree.
 
 from __future__ import annotations
 
+import copy
 import logging
 import typing
 
 import numpy as np
 import torch
 import torch.nn as nn
+
+try:
+    from torch.func import hessian as torch_func_hessian
+except ImportError:
+    torch_func_hessian = None
 from torch_scatter import segment_coo
 
 from fairchem.core.common.registry import registry
@@ -234,6 +240,7 @@ class GemNetOC(nn.Module, GraphModelMixin):
         regress_forces: bool = True,
         direct_forces: bool = False,
         regress_hessian: bool = True,
+        hessian_num_row_samples: int | None = None,
         use_pbc: bool = True,
         use_pbc_single: bool = False,
         scale_backprop_forces: bool = False,
@@ -289,6 +296,7 @@ class GemNetOC(nn.Module, GraphModelMixin):
         self.atom_interaction = atom_interaction
         self.quad_interaction = quad_interaction
         self.regress_hessian = regress_hessian
+        self.hessian_num_row_samples = hessian_num_row_samples
         self.qint_tags = torch.tensor(qint_tags)
         self.otf_graph = otf_graph
         if not rbf_spherical:
@@ -1221,6 +1229,95 @@ class GemNetOC(nn.Module, GraphModelMixin):
             basis_a2a_rad,
         )
 
+    def _forward_energy_only(self, data, pos):
+        batch = data.batch
+        atomic_numbers = data.atomic_numbers.long()
+        num_atoms = atomic_numbers.shape[0]
+
+        data_with_pos = copy.copy(data)
+        data_with_pos.pos = pos
+
+        (
+            main_graph,
+            a2a_graph,
+            a2ee2a_graph,
+            qint_graph,
+            id_swap,
+            trip_idx_e2e,
+            trip_idx_a2e,
+            trip_idx_e2a,
+            quad_idx,
+        ) = self.get_graphs_and_indices(data_with_pos)
+        _, idx_t = main_graph["edge_index"]
+
+        (
+            basis_rad_raw,
+            basis_atom_update,
+            basis_output,
+            bases_qint,
+            bases_e2e,
+            bases_a2e,
+            bases_e2a,
+            basis_a2a_rad,
+        ) = self.get_bases(
+            main_graph=main_graph,
+            a2a_graph=a2a_graph,
+            a2ee2a_graph=a2ee2a_graph,
+            qint_graph=qint_graph,
+            trip_idx_e2e=trip_idx_e2e,
+            trip_idx_a2e=trip_idx_a2e,
+            trip_idx_e2a=trip_idx_e2a,
+            quad_idx=quad_idx,
+            num_atoms=num_atoms,
+        )
+
+        h = self.atom_emb(atomic_numbers)
+        m = self.edge_emb(h, basis_rad_raw, main_graph["edge_index"])
+
+        x_E, _ = self.out_blocks[0](h, m, basis_output, idx_t)
+        xs_E = [x_E]
+
+        for i in range(self.num_blocks):
+            h, m = self.int_blocks[i](
+                h=h,
+                m=m,
+                bases_qint=bases_qint,
+                bases_e2e=bases_e2e,
+                bases_a2e=bases_a2e,
+                bases_e2a=bases_e2a,
+                basis_a2a_rad=basis_a2a_rad,
+                basis_atom_update=basis_atom_update,
+                edge_index_main=main_graph["edge_index"],
+                a2ee2a_graph=a2ee2a_graph,
+                a2a_graph=a2a_graph,
+                id_swap=id_swap,
+                trip_idx_e2e=trip_idx_e2e,
+                trip_idx_a2e=trip_idx_a2e,
+                trip_idx_e2a=trip_idx_e2a,
+                quad_idx=quad_idx,
+            )
+
+            x_E, _ = self.out_blocks[i + 1](h, m, basis_output, idx_t)
+            xs_E.append(x_E)
+
+        x_E = self.out_mlp_E(torch.cat(xs_E, dim=-1))
+        with torch.autocast("cuda", enabled=False):
+            E_t = self.out_energy(x_E.float())
+
+        nMolecules = torch.max(batch) + 1
+        if self.extensive:
+            E_t = scatter_det(
+                E_t, batch, dim=0, dim_size=nMolecules, reduce="add"
+            )
+        else:
+            E_t = scatter_det(
+                E_t, batch, dim=0, dim_size=nMolecules, reduce="mean"
+            )
+
+        E_t = E_t.squeeze(1)
+        e_ref = self.normalizer(data.atomic_numbers, data.batch)
+        return E_t + e_ref
+
     @conditional_grad(torch.enable_grad())
     def forward(self, data):
         pos = data.pos
@@ -1322,8 +1419,8 @@ class GemNetOC(nn.Module, GraphModelMixin):
 
         E_t = E_t.squeeze(1)  # (num_molecules)
 
-        # e_ref = self.normalizer(data.atomic_numbers, data.batch)
-        # E_t =E_t + e_ref
+        e_ref = self.normalizer(data.atomic_numbers, data.batch)
+        E_t =E_t + e_ref
         outputs = {"energy": E_t}
         if self.regress_forces:
             if self.direct_forces:
@@ -1360,79 +1457,124 @@ class GemNetOC(nn.Module, GraphModelMixin):
 
             outputs["forces"] = F_t
 
-        if self.regress_hessian and self.direct_forces:
-            with torch.autocast("cuda", enabled=False):
-                # 预测边上的两个等变标量系数 a 和 b
-                H_scalars = self.out_hessian_scalars(x_F) 
+        if self.regress_hessian:
+            hessian_row_indices = None
+            hessian_is_full = False
+            if self.direct_forces:
+                with torch.autocast("cuda", enabled=False):
+                    # 预测边上的两个等变标量系数 a 和 b
+                    H_scalars = self.out_hessian_scalars(x_F) 
 
-            # 保持牛顿第三定律的对称性 H_st = (H_ts)^T = H_ts
-            if self.forces_coupled:
-                nEdges = idx_t.shape[0]
-                id_undir = repeat_blocks(
-                    main_graph["num_neighbors"] // 2,
-                    repeats=2,
-                    continuous_indexing=True,
+                # 保持牛顿第三定律的对称性 H_st = (H_ts)^T = H_ts
+                if self.forces_coupled:
+                    nEdges = idx_t.shape[0]
+                    id_undir = repeat_blocks(
+                        main_graph["num_neighbors"] // 2,
+                        repeats=2,
+                        continuous_indexing=True,
+                    )
+                    H_scalars = scatter_det(
+                        H_scalars, id_undir, dim=0, dim_size=int(nEdges / 2), reduce="mean"
+                    )
+                    H_scalars = H_scalars[id_undir]
+
+                a_st = H_scalars[:, 0:1]  # (nEdges, 1)
+                b_st = H_scalars[:, 1:2]  # (nEdges, 1)
+
+                # 获取边方向向量
+                v = main_graph["vector"]  # (nEdges, 3)
+                
+                # 1. 构造张量外积 v ⊗ v -> (nEdges, 3, 3)
+                v_outer = v.unsqueeze(2) * v.unsqueeze(1) 
+                
+                # 2. 构造 3x3 单位阵 I -> (1, 3, 3)
+                I = torch.eye(3, device=v.device, dtype=v.dtype).unsqueeze(0)
+                
+                # 3. 计算每条边对应的 3x3 Hessian 子块: H_st = a*I + b*(v⊗v)
+                # 形状: (nEdges, 3, 3)
+                H_st = a_st.unsqueeze(-1) * I + b_st.unsqueeze(-1) * v_outer
+
+                idx_s = main_graph["edge_index"][0] # Source atoms
+                # idx_t = main_graph["edge_index"][1] 已经在前面获取过了
+                
+                # 4. 初始化全局全量矩阵, 使用 scatter_add 处理多重边 (如 PBC)
+                # 计算展平的 N x N 索引
+                flat_idx = idx_t * num_atoms + idx_s  # (nEdges,)
+                
+                # 初始化 (N*N, 9) 形状的张量
+                H_global_flat = torch.zeros(num_atoms * num_atoms, 9, device=v.device, dtype=H_st.dtype)
+                
+                # 累加边上的 Hessian 块
+                H_global_flat.scatter_add_(
+                    dim=0, 
+                    index=flat_idx.view(-1, 1).expand(-1, 9), 
+                    src=H_st.view(-1, 9)
                 )
-                H_scalars = scatter_det(
-                    H_scalars, id_undir, dim=0, dim_size=int(nEdges / 2), reduce="mean"
+                
+                # 恢复为 (N, N, 3, 3)
+                # H_global[t, s, :, :] 表示目标原子 t 和源原子 s 的 3x3 作用块
+                H_global = H_global_flat.view(num_atoms, num_atoms, 3, 3)
+                
+                # 5. 应用声学求和规则 (ASR, Acoustic Sum Rule) 计算对角线块
+                # H_tt = - sum_{s ≠ t} H_ts
+                # 沿着源原子维度 (s, 即 dim=1) 累加
+                H_diag = -H_global.sum(dim=1)  # (num_atoms, 3, 3)
+                
+                # 将满足平移不变性的对角块强制填回矩阵对角线
+                atom_indices = torch.arange(num_atoms, device=v.device)
+                H_global[atom_indices, atom_indices, :, :] = H_diag
+                
+                # 6. 重新排列维度并展平为最终的 (3N, 3N) 稠密矩阵
+                # 从 (N_t, N_s, 3_t, 3_s) 变为 (N_t, 3_t, N_s, 3_s) 然后打平
+                H_final = H_global.permute(0, 2, 1, 3).reshape(num_atoms * 3, num_atoms * 3)
+                
+                
+                H_final = 0.5 * (H_final + H_final.T)
+                full_hessian_row_indices = torch.arange(
+                    num_atoms * 3, device=H_final.device, dtype=torch.long
                 )
-                H_scalars = H_scalars[id_undir]
+                if self.training and self.hessian_num_row_samples is not None:
+                    if full_hessian_row_indices.numel() > self.hessian_num_row_samples:
+                        perm = torch.randperm(
+                            full_hessian_row_indices.numel(), device=H_final.device
+                        )
+                        hessian_row_indices = full_hessian_row_indices[
+                            perm[: self.hessian_num_row_samples]
+                        ].sort().values
+                    else:
+                        hessian_row_indices = full_hessian_row_indices
+                    H_final = H_final.index_select(0, hessian_row_indices)
+                else:
+                    hessian_row_indices = full_hessian_row_indices
+                hessian_is_full = hessian_row_indices.numel() == num_atoms * 3
 
-            a_st = H_scalars[:, 0:1]  # (nEdges, 1)
-            b_st = H_scalars[:, 1:2]  # (nEdges, 1)
+                
+            else:
+                hessian_rows, hessian_row_indices = self.force_scaler.compute_hessian_masked(
+                    F_t,
+                    data,
+                    training=self.training,
+                    max_samples=self.hessian_num_row_samples,
+                )
+                if self.training:
+                    H_final = hessian_rows
+                else:
+                    H_final = torch.zeros(
+                        num_atoms * 3,
+                        num_atoms * 3,
+                        device=hessian_rows.device,
+                        dtype=hessian_rows.dtype,
+                    )
+                    H_final[hessian_row_indices] = hessian_rows
+                    H_final = 0.5 * (H_final + H_final.T)
+                hessian_is_full = hessian_row_indices.numel() == num_atoms * 3
 
-            # 获取边方向向量
-            v = main_graph["vector"]  # (nEdges, 3)
-            
-            # 1. 构造张量外积 v ⊗ v -> (nEdges, 3, 3)
-            v_outer = v.unsqueeze(2) * v.unsqueeze(1) 
-            
-            # 2. 构造 3x3 单位阵 I -> (1, 3, 3)
-            I = torch.eye(3, device=v.device, dtype=v.dtype).unsqueeze(0)
-            
-            # 3. 计算每条边对应的 3x3 Hessian 子块: H_st = a*I + b*(v⊗v)
-            # 形状: (nEdges, 3, 3)
-            H_st = a_st.unsqueeze(-1) * I + b_st.unsqueeze(-1) * v_outer
-
-            idx_s = main_graph["edge_index"][0] # Source atoms
-            # idx_t = main_graph["edge_index"][1] 已经在前面获取过了
-            
-            # 4. 初始化全局全量矩阵, 使用 scatter_add 处理多重边 (如 PBC)
-            # 计算展平的 N x N 索引
-            flat_idx = idx_t * num_atoms + idx_s  # (nEdges,)
-            
-            # 初始化 (N*N, 9) 形状的张量
-            H_global_flat = torch.zeros(num_atoms * num_atoms, 9, device=v.device, dtype=H_st.dtype)
-            
-            # 累加边上的 Hessian 块
-            H_global_flat.scatter_add_(
-                dim=0, 
-                index=flat_idx.view(-1, 1).expand(-1, 9), 
-                src=H_st.view(-1, 9)
+        outputs["hessian"] = H_final
+        if self.regress_hessian:
+            outputs["hessian_row_indices"] = hessian_row_indices
+            outputs["hessian_is_full"] = torch.tensor(
+                hessian_is_full, device=H_final.device, dtype=torch.bool
             )
-            
-            # 恢复为 (N, N, 3, 3)
-            # H_global[t, s, :, :] 表示目标原子 t 和源原子 s 的 3x3 作用块
-            H_global = H_global_flat.view(num_atoms, num_atoms, 3, 3)
-            
-            # 5. 应用声学求和规则 (ASR, Acoustic Sum Rule) 计算对角线块
-            # H_tt = - sum_{s ≠ t} H_ts
-            # 沿着源原子维度 (s, 即 dim=1) 累加
-            H_diag = -H_global.sum(dim=1)  # (num_atoms, 3, 3)
-            
-            # 将满足平移不变性的对角块强制填回矩阵对角线
-            atom_indices = torch.arange(num_atoms, device=v.device)
-            H_global[atom_indices, atom_indices, :, :] = H_diag
-            
-            # 6. 重新排列维度并展平为最终的 (3N, 3N) 稠密矩阵
-            # 从 (N_t, N_s, 3_t, 3_s) 变为 (N_t, 3_t, N_s, 3_s) 然后打平
-            H_final = H_global.permute(0, 2, 1, 3).reshape(num_atoms * 3, num_atoms * 3)
-            
-            
-            H_final = 0.5 * (H_final + H_final.T)
-
-            outputs["hessian"] = H_final
-
         return outputs
 
     @property

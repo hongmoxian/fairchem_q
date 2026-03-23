@@ -317,6 +317,11 @@ class OCPTrainer(BaseTrainer):
                 pred = pred.view(batch_size, -1)
             outputs[target_key] = pred
 
+        if "hessian_row_indices" in out:
+            outputs["hessian_row_indices"] = out["hessian_row_indices"]
+        if "hessian_is_full" in out:
+            outputs["hessian_is_full"] = out["hessian_is_full"]
+
         return outputs
 
     def _compute_loss(self, out, batch) -> torch.Tensor:
@@ -376,17 +381,31 @@ class OCPTrainer(BaseTrainer):
                     # --- A. 准备基础掩码 ---
                     pred_hessian = out["hessian"]         # [3N_total, 3N_total] (稠密)
                     target_hessian = batch.hessian        # [3N_total, 3N_total] (稀疏/清洗过)
-                    
+                    pred_hessian_rows = pred_hessian
+                    hessian_row_indices = out.get("hessian_row_indices", None)
+                    hessian_is_full = bool(out.get("hessian_is_full", False))
 
+                    if hessian_is_full:
+                        target_hessian_rows = target_hessian
+                    elif hessian_row_indices is not None:
+                        target_hessian_rows = target_hessian.index_select(
+                            0, hessian_row_indices
+                        )
+                    else:
+                        raise RuntimeError(
+                            "Predicted Hessian is partial, but hessian_row_indices were not returned."
+                        )
 
-                        # 4. MSE 计算
-                    loss_hessian_elem = torch.nn.functional.mse_loss(pred_hessian, target_hessian)
+                    loss_hessian_elem = torch.nn.functional.mse_loss(
+                        pred_hessian_rows, target_hessian_rows
+                    )
 
                     # --- C. 计算 Eigenvalue Loss (可选) ---
                     # 仅当配置了 eig_coefficient > 0 时计算
-                    
-                    
-                    if eig_mult > 0:
+
+                    has_full_hessian = hessian_is_full
+
+                    if eig_mult > 0 and has_full_hessian:
                         batch_eig_losses = []
                         start_idx = 0
                         
@@ -471,7 +490,14 @@ class OCPTrainer(BaseTrainer):
             if self.output_targets[target_name]["level"] == "atom" and target_name != 'hessian':
                 target = target.view(num_atoms_in_batch, -1)
             elif self.output_targets[target_name]["level"] == "atom" and target_name == 'hessian':
-                target = target
+                hessian_is_full = bool(out.get("hessian_is_full", False))
+                hessian_row_indices = out.get("hessian_row_indices", None)
+                if not hessian_is_full:
+                    if hessian_row_indices is None:
+                        raise RuntimeError(
+                            "Predicted Hessian is partial during metric computation, but hessian_row_indices were not returned."
+                        )
+                    target = target.index_select(0, hessian_row_indices)
             else:
                 target = target.view(batch_size, -1)
 
