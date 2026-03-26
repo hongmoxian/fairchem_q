@@ -1,0 +1,131 @@
+dataset:
+  train:
+    src: ../dataset/  # 测试集路径，必须放在一个文件夹里面
+    format: lmdb
+    a2g_args:
+      r_energy: true
+      r_forces: true
+  val:
+    src: ../dataset/  # 测试集路径，必须放在一个文件夹里面
+    format: lmdb
+    a2g_args:
+      r_energy: true
+      r_forces: true
+evaluation_metrics:
+  metrics:
+    energy:
+    - mae
+    forces:
+    - mae
+    - cosine_similarity
+    - magnitude_error
+    misc:
+    - energy_forces_within_threshold
+    hessian:
+    - mae
+  primary_metric: forces_mae
+local_rank: 0
+logger: 
+  name: tensorboard
+loss_functions:
+- energy:
+    coefficient: 1
+    fn: mae
+- forces:
+    coefficient: 5 
+    fn: l2mae
+- hessian:
+    coefficient: 1
+    fn: l2mae
+
+
+model:
+  name: gemnet_oc
+  num_spherical: 7
+  num_radial: 128
+  num_blocks: 4
+  emb_size_atom: 256
+  emb_size_edge: 512
+  emb_size_trip_in: 64
+  emb_size_trip_out: 64
+  emb_size_quad_in: 32
+  emb_size_quad_out: 32
+  emb_size_aint_in: 64
+  emb_size_aint_out: 64
+  emb_size_rbf: 16
+  emb_size_cbf: 16
+  emb_size_sbf: 32
+  num_before_skip: 2
+  num_after_skip: 2
+  num_concat: 1
+  num_atom: 3
+  num_output_afteratom: 3
+  cutoff: 12.0
+  cutoff_qint: 12.0
+  cutoff_aeaint: 12.0
+  cutoff_aint: 12.0
+  max_neighbors: 30
+  max_neighbors_qint: 8
+  max_neighbors_aeaint: 20
+  max_neighbors_aint: 1000
+  rbf:
+    name: gaussian
+  envelope:
+    name: polynomial
+    exponent: 5
+  cbf:
+    name: spherical_harmonics
+  sbf:
+    name: legendre_outer
+  extensive: True
+  output_init: HeOrthogonal
+  activation: silu
+
+  regress_forces: True
+  direct_forces: False
+  forces_coupled: False
+  regress_hessian: True
+  hessian_num_row_samples: 40
+  otf_graph: True
+
+  quad_interaction: False
+  atom_edge_interaction: True
+  edge_atom_interaction: True
+  atom_interaction: True
+
+  num_atom_emb_layers: 2
+  num_global_out_layers: 2
+  qint_tags: [1, 2]
+
+optim:
+  batch_size: 1
+  clip_grad_norm: 10
+  ema_decay: 0.9
+  eval_batch_size: 1
+  eval_every: 20
+  factor: 0.8
+  load_balancing: atoms
+  lr_initial: 1.0e-5
+  max_epochs: 30 
+  mode: min
+  num_workers: 2
+  optimizer: AdamW
+  optimizer_params:
+    amsgrad: true
+  patience: 3
+  scheduler: ReduceLROnPlateau
+  weight_decay: 1.0e-4
+outputs:
+  energy:
+    level: system
+  forces:
+    eval_on_free_atoms: true
+    level: atom
+    train_on_free_atoms: true
+  hessian:
+    eval_on_free_atoms: true
+    level: atom
+    train_on_free_atoms: true
+relax_dataset: {}
+slurm: {}
+task: {}

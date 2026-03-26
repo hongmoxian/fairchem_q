@@ -1,0 +1,12 @@
+Starting job 630388 at  Sat Mar 7 16:55:30 CST 2026
+SLURM_SUBMIT_DIR is /home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/vasp_work/image_01/hess
+Running on nodes: cm12
+Loading compiler version 2023.2.1
+Loading tbb version 2021.10.0
+Loading compiler-rt version 2023.2.1
+Loading oclfpga version 2023.2.1
+  Load "debugger" to debug DPC++ applications with the gdb-oneapi debugger.
+  Load "dpl" for additional DPC++ APIs: https://github.com/oneapi-src/oneDPL
+Loading mkl version 2023.2.0
+Loading mpi version 2021.9.0
+Job 630388 done at  Sat Mar 7 17:25:22 CST 2026

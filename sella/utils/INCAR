@@ -1,0 +1,49 @@
+#SYSTEM = Bulk Phonons (DFPT)
+#ISMEAR = 1
+#SIGMA  = 0.1
+#ENCUT  = 500
+#EDIFF  = 1E-7
+#NELM   = 150
+#NELMIN = 6
+#ISIF   = 2
+#ALGO   = F
+#LREAL  = auto    # 对于DFPT，LREAL = .FALSE. 是必须的！
+#ISYM   = 0
+
+# --- 频率计算核心参数 ---
+#IBRION = 8          # 使用DFPT方法计算力常数（Hessian矩阵）
+#NSW    = 1          # 单点计算
+#POTIM  = 0.015      # 此参数在IBRION=8时意义不同，但建议保留
+
+# --- 高性能与输出控制 ---
+#LWAVE  = .FALSE.
+#LCHARG = .FALSE.
+#NPAR   = 4          # 对于DFPT，NPAR=1 通常是必需且更稳定的！
+# LPHON = .TRUE.     # 如果需要写入力常数到OUTCAR，可以开启（可选）
+
+
+SYSTEM = Bulk Frequency (Finite Difference)
+ISMEAR = 1
+SIGMA  = 0.1
+ENCUT  = 500      # 需要比结构优化更严格的电子步收敛标准
+NELM   = 150
+NELMIN = 6
+ISIF   = 2          # 固定晶胞和形状，仅计算原子振动
+ALGO   = F     # 对于频率计算，使用Normal或Fast更稳定
+LREAL  = Auto
+ISYM   = 0          # 关闭对称性，对于频率计算很重要
+
+# --- 频率计算核心参数 ---          # 使用有限位移法计算力常数（Hessian矩阵）
+POTIM  = 0.015      # 原子位移步长（单位Å），默认值通常可用
+#NFREE  = 2          # 沿每个自由度正反两个方向位移（默认，精度更高）        # 单点计算，不进行离子弛豫！
+
+# --- 高性能与输出控制 ---
+LWAVE  = .FALSE.
+LCHARG = .FALSE.
+NPAR   = 4          # 根据您的体系测试，有时NPAR=核心数能更快
+LREAL  = auto
+# --- 非周期性体系（分子、团簇）特别设置 ---
+# 如果计算的是孤立分子或团簇，必须添加：
+# PREC = Accurate
+# ADDGRID = .TRUE.
+# 并在POSCAR中设置足够大的真空层

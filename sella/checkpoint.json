@@ -1,0 +1,53 @@
+{
+  "completed_stages": [
+    "interpolation",
+    "vasp_sampling",
+    "lmdb_creation",
+    "fine_tuning",
+    "sella_search"
+  ],
+  "current_stage": "sella_search",
+  "images": [
+    "image_00.vasp",
+    "image_01.vasp",
+    "image_02.vasp",
+    "image_03.vasp",
+    "image_04.vasp",
+    "image_05.vasp",
+    "image_06.vasp"
+  ],
+  "task_info": [
+    {
+      "id": 0,
+      "image_dir": "/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/vasp_work/image_00",
+      "sp_path": "/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/vasp_work/image_00/sp",
+      "type": "mixed",
+      "hess_path": "/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/vasp_work/image_00/hess"
+    },
+    {
+      "id": 1,
+      "image_dir": "/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/vasp_work/image_01",
+      "sp_path": "/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/vasp_work/image_01/sp",
+      "type": "mixed",
+      "hess_path": "/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/vasp_work/image_01/hess"
+    },
+    {
+      "id": 2,
+      "image_dir": "/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/vasp_work/image_02",
+      "sp_path": "/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/vasp_work/image_02/sp",
+      "type": "mixed",
+      "hess_path": "/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/vasp_work/image_02/hess"
+    }
+  ],
+  "job_ids": [
+    "630385",
+    "630386",
+    "630387",
+    "630388",
+    "630389",
+    "630390"
+  ],
+  "ts_guess_path": "ts_final.vasp",
+  "model_path": "/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/finetune_output/checkpoints/2026-03-23-12-20-16/best_checkpoint.pt",
+  "timestamp": 1774242044.5673456
+}

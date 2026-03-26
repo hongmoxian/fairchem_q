@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH -N 1
+#SBATCH -p intel96
+#SBATCH -n 96
+##SBATCH --exclude=master
+# 打印任务信息
+echo "Starting job $SLURM_JOB_ID at " `date`
+echo "SLURM_SUBMIT_DIR is $SLURM_SUBMIT_DIR"
+echo "Running on nodes: $SLURM_NODELIST"
+
+# 执行任务
+## 载入vasp
+module load VASP/6.4.1-gzbuild-intel_8300
+mpirun vasp_std > vasp.out 2>vasp.err
+
+#python 4.py >> 4.out
+# 任务结束
+echo "Job $SLURM_JOB_ID done at " `date`
+

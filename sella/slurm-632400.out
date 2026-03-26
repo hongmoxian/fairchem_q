@@ -1,0 +1,155 @@
+Starting job 632400 at  Tue Mar 10 17:35:54 CST 2026
+SLURM_SUBMIT_DIR is /home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella
+Running on nodes: gn3
+/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/fairchem/src/fairchem/core/models/scn/spherical_harmonics.py:23: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  _Jd = torch.load(os.path.join(os.path.dirname(__file__), "Jd.pt"))
+/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/fairchem/src/fairchem/core/models/equiformer_v2/wigner.py:10: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  _Jd = torch.load(os.path.join(os.path.dirname(__file__), "Jd.pt"))
+/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/fairchem/src/fairchem/core/models/escn/so3.py:23: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  _Jd = torch.load(os.path.join(os.path.dirname(__file__), "Jd.pt"))
+/home/wuzhihong/dp/fairchem/fairchem/ceshi/clam/fairchem_q/fairchem/src/fairchem/core/common/relaxation/ase_utils.py:191: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(checkpoint_path, map_location=torch.device("cpu"))
+INFO:root:local rank base: 0
+INFO:root:amp: true
+cmd:
+  checkpoint_dir: /home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/checkpoints/2026-03-10-17-36-00
+  commit: 54e04ed0
+  identifier: ''
+  logs_dir: /home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/logs/wandb/2026-03-10-17-36-00
+  print_every: 100
+  results_dir: /home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/results/2026-03-10-17-36-00
+  seed: null
+  timestamp_id: 2026-03-10-17-36-00
+  version: 1.0.0
+dataset:
+  a2g_args:
+    r_energy: true
+    r_forces: true
+  format: lmdb
+evaluation_metrics:
+  metrics:
+    energy:
+    - mae
+    forces:
+    - mae
+    - cosine_similarity
+    - magnitude_error
+    hessian:
+    - mae
+    misc:
+    - energy_forces_within_threshold
+  primary_metric: forces_mae
+gp_gpus: null
+gpus: 1
+logger: wandb
+loss_functions:
+- energy:
+    coefficient: 1
+    fn: mae
+- forces:
+    coefficient: 5
+    fn: l2mae
+- hessian:
+    coefficient: 1
+    fn: l2mae
+model:
+  activation: silu
+  atom_edge_interaction: true
+  atom_interaction: true
+  cbf:
+    name: spherical_harmonics
+  cutoff: 12.0
+  cutoff_aeaint: 12.0
+  cutoff_aint: 12.0
+  cutoff_qint: 12.0
+  direct_forces: true
+  edge_atom_interaction: true
+  emb_size_aint_in: 64
+  emb_size_aint_out: 64
+  emb_size_atom: 256
+  emb_size_cbf: 16
+  emb_size_edge: 512
+  emb_size_quad_in: 32
+  emb_size_quad_out: 32
+  emb_size_rbf: 16
+  emb_size_sbf: 32
+  emb_size_trip_in: 64
+  emb_size_trip_out: 64
+  envelope:
+    exponent: 5
+    name: polynomial
+  extensive: true
+  forces_coupled: false
+  max_neighbors: 30
+  max_neighbors_aeaint: 20
+  max_neighbors_aint: 1000
+  max_neighbors_qint: 8
+  name: gemnet_oc
+  num_after_skip: 2
+  num_atom: 3
+  num_atom_emb_layers: 2
+  num_before_skip: 2
+  num_blocks: 4
+  num_concat: 1
+  num_global_out_layers: 2
+  num_output_afteratom: 3
+  num_radial: 128
+  num_spherical: 7
+  otf_graph: true
+  output_init: HeOrthogonal
+  qint_tags:
+  - 1
+  - 2
+  quad_interaction: true
+  rbf:
+    name: gaussian
+  regress_forces: true
+  regress_hessian: true
+  sbf:
+    name: legendre_outer
+optim:
+  batch_size: 1
+  clip_grad_norm: 10
+  ema_decay: 0.9
+  eval_batch_size: 1
+  eval_every: 20
+  factor: 0.8
+  load_balancing: atoms
+  lr_initial: 1.0e-05
+  max_epochs: 50
+  mode: min
+  num_workers: 2
+  optimizer: AdamW
+  optimizer_params:
+    amsgrad: true
+  patience: 3
+  scheduler: ReduceLROnPlateau
+  weight_decay: 0.0001
+outputs:
+  energy:
+    level: system
+  forces:
+    eval_on_free_atoms: true
+    level: atom
+    train_on_free_atoms: true
+  hessian:
+    eval_on_free_atoms: true
+    level: atom
+    train_on_free_atoms: true
+relax_dataset: {}
+slurm: {}
+task: {}
+test_dataset: {}
+trainer: ocp
+val_dataset: {}
+
+INFO:root:Loading model: gemnet_oc
+INFO:root:Loaded GemNetOC with 38865462 parameters.
+INFO:root:Loading checkpoint in inference-only mode, not loading keys associated with trainer state!
+/home/wuzhihong/vasp/lsr/d3/POSCAR-Cu111-NH2_opt/ts/bk/no-fix/sella/workflow.py:760: DeprecationWarning: Please use atoms.calc = calc
+  image.set_calculator(calc)
+INFO:jax._src.xla_bridge:Unable to initialize backend 'cuda': 
+INFO:jax._src.xla_bridge:Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig'
+INFO:jax._src.xla_bridge:Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+WARNING:jax._src.xla_bridge:An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
+Job 632400 done at  Tue Mar 10 17:41:52 CST 2026
